@@ -144,7 +144,7 @@ Avoid organizing the top-level repository by technology.
 
 Bad long-term structure:
 
-```text
+```
 spark/
 kafka/
 databricks/
@@ -153,7 +153,7 @@ jvm/
 
 Preferred structure:
 
-```text
+```
 cases/
 concepts/
 decisions/
@@ -172,7 +172,7 @@ Avoid deep folder trees.
 
 Keep the repository deliberately small until actual use creates a need for more structure.
 
-```text
+```
 .
 ├── README.md
 ├── AGENTS.md
@@ -242,11 +242,71 @@ If a template makes me reluctant to create a case, simplify it.
 
 ---
 
+## Case Creation Workflow
+
+The canonical workflow for creating a new case is defined in:
+
+`/.ai/workflows/new-case.md`
+
+Any AI model working on a new case should follow that workflow after reading this file.
+
+At a minimum, the workflow is:
+
+```
+new problem / experience
+        ↓
+classify: case, inbox item, or no artifact
+        ↓
+search related existing cases
+        ↓
+capture my unaided mental model
+        ↓
+challenge assumptions and identify evidence gaps
+        ↓
+investigate / experiment / research
+        ↓
+review competing explanations
+        ↓
+write the case
+        ↓
+review the final reasoning
+        ↓
+create or update the GitHub case
+```
+
+### Context loading rule
+
+An AI agent should **not** read the entire repository by default.
+
+For a new case, load context progressively:
+
+1. Read `AGENTS.md`.
+2. Read the relevant template.
+3. Search `cases/` for related topics, technologies, or problems.
+4. Read only the related cases needed to establish context.
+5. Load other repository material only when the case actually depends on it.
+
+This keeps sessions efficient and makes the repository scale.
+
+### New case interaction rule
+
+When I say I have a new case, the agent should **not immediately write polished Markdown**.
+
+First help me reconstruct and test the reasoning.
+
+Ask targeted questions when necessary. Prefer questions that distinguish between competing explanations or establish evidence.
+
+If I have not yet investigated something, preserve it as an open question or hypothesis rather than filling the gap.
+
+Only construct the final case once the reasoning is sufficiently clear.
+
+---
+
 ## Case Workflow
 
 Default workflow:
 
-```text
+```
 interesting problem
       ↓
 quick inbox entry
@@ -517,13 +577,15 @@ New structure should be added only when repeated use creates a real need.
 
 Possible future additions:
 
-```text
+```
 decisions/
 labs/
 playbooks/
 career/
 .ai/
 ```
+
+The `.ai/` directory is now justified for stable, reusable agent workflows. Keep it small and repository-specific.
 
 ### `decisions/`
 
@@ -589,18 +651,18 @@ Possible contents:
 
 ### `.ai/`
 
-Only create this when AI workflows become stable and repeatedly useful.
+Contains only stable, reusable workflows and checks for AI-assisted work on this repository.
 
-Possible future structure:
+Do not turn it into a prompt collection.
 
-```text
-.ai/
-├── workflows/
-├── prompts/
-└── checks/
-```
+Prefer workflows that describe:
 
-Prefer reusable workflows over a large collection of clever prompts.
+- what context to load;
+- what reasoning process to follow;
+- what questions to ask;
+- what evidence standard to apply;
+- what artifact to produce;
+- what checks to perform before committing.
 
 ---
 
@@ -613,24 +675,31 @@ Agents should work over the repository, not replace it.
 Good future agent jobs include:
 
 ### 1. Inbox triage
+
 Identify which entries deserve cases, which relate to existing knowledge, and which can be ignored.
 
 ### 2. Knowledge linking
+
 Suggest relationships between cases, concepts, decisions, and playbooks.
 
 ### 3. Reasoning review
+
 Challenge completed cases for assumptions, missing evidence, failure modes, and contradictions.
 
 ### 4. Experiment generation
+
 Propose or scaffold experiments that distinguish competing hypotheses.
 
 ### 5. Knowledge maintenance
+
 Suggest updates to canonical concept notes when several cases change or refine my mental model.
 
 ### 6. Career analysis
+
 Review recent work and identify evidence of deeper ownership, recurring weaknesses, and gaps in experience.
 
 ### 7. Architecture review
+
 Act as an adversarial reviewer of design proposals and identify hidden assumptions or operational risks.
 
 ---
@@ -774,15 +843,17 @@ Depth matters more than volume.
 
 When working with this repository:
 
-1. Preserve the distinction between observation, hypothesis, and conclusion.
-2. Challenge my reasoning before polishing it.
-3. Ask what evidence supports a claim.
-4. Prefer experiments and authoritative sources over confident speculation.
-5. Connect new work to relevant existing cases or concepts.
-6. Do not create unnecessary structure.
-7. Do not turn the repository into generic documentation.
-8. Do not invent project-specific details.
-9. Protect confidential information.
-10. Optimize for my long-term engineering judgment, not short-term note production.
+1. Read `AGENTS.md` first.
+2. Load only the template and existing cases relevant to the current task.
+3. Preserve the distinction between observation, hypothesis, and conclusion.
+4. Challenge my reasoning before polishing it.
+5. Ask what evidence supports a claim.
+6. Prefer experiments and authoritative sources over confident speculation.
+7. Connect new work to relevant existing cases or concepts.
+8. Do not create unnecessary structure.
+9. Do not turn the repository into generic documentation.
+10. Do not invent project-specific details.
+11. Protect confidential information.
+12. Optimize for my long-term engineering judgment, not short-term note production.
 
 If unsure whether to add something, prefer **less structure and more deliberate reasoning**.
