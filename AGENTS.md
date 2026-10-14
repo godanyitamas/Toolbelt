@@ -1,728 +1,84 @@
-# AGENTS.md — Engineering Casebook Intent
+# AGENTS.md — Engineering Casebook Rules
 
-## Purpose
+This repository is my personal **engineering casebook**: real technical problems from my work, turned into better mental models and engineering judgment. It is not an encyclopedia, a copy of official documentation, or a PKM system.
 
-This repository is my personal **engineering casebook**.
-
-It is not intended to become an encyclopedia of technologies, a second version of official documentation, or a large personal-knowledge-management project.
-
-Its purpose is to help me become a stronger engineer by capturing and reflecting on **real technical problems I encounter in my work**, then turning those experiences into better mental models, reusable engineering judgment, and eventually stronger architecture and technical-leadership skills.
-
-My broader career direction is:
-
-**Senior Data Engineer → deeper systems / distributed-systems engineer → Staff-level engineer and/or Data Platform / Solutions Architect**
-
-AI is part of this strategy, but not because I want to compete on code generation. The assumption is that code will continue to become cheaper. I therefore want to move upward in abstraction:
-
-**implementation → systems understanding → architecture → technical ownership**
-
-The repository should help me make that transition deliberately.
-
----
-
-## Current Technical Context
-
-My current work is primarily in large-scale data engineering, including areas such as:
-
-- Apache Spark
-- Scala
-- PySpark
-- Databricks
-- Delta Lake
-- Structured Streaming
-- Kafka / Event Hubs
-- Azure
-- Terraform
-- production ETL / ingestion systems
-- performance and cost optimization
-- data quality
-- production releases and operations
-
-I want to use my real project work as the main learning environment rather than relying primarily on courses or side projects.
-
-The most valuable situations are usually those where:
-
-- I do not properly understand why the system behaves the way it does;
-- something behaves differently from what I expected;
-- there are multiple plausible technical approaches;
-- a system is slow, expensive, unreliable, or hard to reason about;
-- I need to understand a layer below the abstraction I normally work with;
-- I need to make or defend a technical design decision.
+This file holds the rules an AI agent needs on every task. My career direction, technical context and longer-term strategy live in `README.md` under **Direction and strategy**; read that only when a task needs it (e.g. career analysis, architecture review).
 
 ---
 
 ## Core Philosophy
 
-### 1. Problems before theory
+1. **Problems before theory.** Topics enter the repository because they became relevant to an actual problem, not because they exist.
+2. **Think before asking AI.** I write down what I think is happening, what I am unsure about, my assumptions and my evidence first. A wrong initial explanation is useful because it makes learning visible.
+3. **Evidence over plausibility.** Keep observations, hypotheses, verified facts, interpretations, conclusions and open questions distinct. Prefer documentation, measurements, experiments, source code, Spark UI / plans, logs, metrics and reproducible behavior. A plausible AI explanation is not a fact.
+4. **AI challenges reasoning, it does not replace it.** Identify hidden assumptions, expose gaps, suggest competing explanations and experiments, find authoritative sources, review conclusions, connect to prior cases. Do not produce polished notes before I understand the subject, silently rewrite my conclusions, treat uncertainty as certainty, or optimize for volume.
 
-Start from real engineering problems.
-
-Do not create notes simply because a topic exists.
-
-A topic such as Spark memory, JVM garbage collection, Kafka partitioning, or backpressure should normally enter the repository because it became relevant to an actual problem.
-
----
-
-### 2. Think before asking AI
-
-Before asking AI for an explanation, I should first write down:
-
-- what I currently think is happening;
-- what I am uncertain about;
-- what assumptions I am making;
-- what evidence I already have.
-
-The point is to develop my own mental models, not outsource them.
-
-A wrong initial explanation is useful because it makes learning visible.
+Interaction pattern: **my model → AI challenge → investigation → AI review → my final model**
 
 ---
 
-### 3. Evidence over plausibility
+## Repository Structure
 
-Keep a strong distinction between:
-
-- observations;
-- hypotheses;
-- verified facts;
-- interpretations;
-- conclusions;
-- open questions.
-
-Prefer evidence such as:
-
-- documentation;
-- measurements;
-- experiments;
-- source code;
-- Spark UI / execution plans;
-- logs;
-- metrics;
-- reproducible behavior.
-
-Do not treat a plausible AI-generated explanation as established fact.
-
----
-
-### 4. AI should challenge reasoning, not replace it
-
-AI should primarily help by:
-
-- identifying hidden assumptions;
-- asking questions that expose gaps;
-- identifying missing concepts;
-- suggesting competing explanations;
-- proposing experiments;
-- finding authoritative sources;
-- reviewing conclusions;
-- challenging architecture and trade-offs;
-- connecting a new case with prior cases;
-- helping organize knowledge after I understand it.
-
-AI should generally **not**:
-
-- produce polished notes before I understand the subject;
-- silently rewrite my conclusions;
-- treat uncertainty as certainty;
-- optimize for volume of notes;
-- replace investigation with confident explanation.
-
-A useful interaction pattern is:
-
-**my model → AI challenge → investigation → AI review → my final model**
-
----
-
-## Repository Design Principle
-
-Use this rule:
-
-**Folders = what kind of artifact is this?**  
-**Links / tags = what is it about?**
-
-Avoid organizing the top-level repository by technology.
-
-Bad long-term structure:
-
-```
-spark/
-kafka/
-databricks/
-jvm/
-```
-
-Preferred structure:
-
-```
-cases/
-concepts/
-decisions/
-labs/
-playbooks/
-career/
-```
-
-Technologies and themes should be represented through titles, links, search, and eventually lightweight metadata.
-
-Avoid deep folder trees.
-
----
-
-## Current Repository Structure
-
-Keep the repository deliberately small until actual use creates a need for more structure.
+**Folders = what kind of artifact is this? Links / tags = what is it about?** Never organize top-level folders by technology (`spark/`, `kafka/`, …). Avoid deep folder trees.
 
 ```
 .
-├── README.md
-├── AGENTS.md
-├── inbox.md
-├── cases/
-├── concepts/
-└── templates/
-    └── case.md
+├── README.md        # principles + direction and strategy (for me)
+├── AGENTS.md        # rules for agents (this file)
+├── inbox.md         # fast capture only; do not polish
+├── cases/           # core: real problems and investigations
+├── concepts/        # reusable mental models that emerged from several cases
+├── templates/       # case.md, retrospective-case.md
+└── .ai/workflows/   # stable, repository-specific agent workflows
 ```
 
-### `inbox.md`
-
-Fast capture only.
-
-Use it for:
-
-- questions;
-- surprising behavior;
-- ideas;
-- things worth investigating later.
-
-Do not polish inbox entries.
-
-Not every inbox entry needs to become a case.
+- **Case:** create one when I did not understand a behavior, something surprised me, solutions have meaningful trade-offs, I investigated performance / reliability / cost / scalability / correctness, or the experience changed how I would approach a similar problem. Routine tickets do not need cases.
+- **Concept:** only when several real cases show a reusable mental model would help. Never because a concept is important in general.
+- **Templates** should reduce friction. If one makes me reluctant to write a case, simplify it.
+- **`.ai/`** holds only stable workflows (what context to load, what reasoning to follow, what evidence standard, what checks before committing). Not a prompt collection.
+- **New structure** (`decisions/`, `labs/`, `playbooks/`, `career/`) is added only when repeated use creates a real need. Their intended purposes are described in `README.md`.
 
 ---
 
-### `cases/`
+## Working on Cases
 
-This is the core of the repository.
-
-A case is based on a real engineering problem or investigation.
-
-Create a case when at least one of these is true:
-
-- I do not understand why something behaves as it does;
-- something surprised me;
-- multiple solutions have meaningful trade-offs;
-- I investigated performance, reliability, cost, scalability, or correctness;
-- the experience changed how I would approach a similar problem next time.
-
-Routine tickets do not need cases.
-
----
-
-### `concepts/`
-
-Reusable mental models that emerge from multiple cases.
-
-Do **not** create concept notes just because a concept exists.
-
-For example, do not create `spark-memory.md` because Spark memory is important.
-
-Create it when several real cases show that a reusable mental model of Spark memory would help.
-
-The repository should gradually produce its own useful conceptual layer from experience.
-
----
-
-### `templates/`
-
-Contains lightweight templates used by the repository.
-
-Templates should reduce friction, not create paperwork.
-
-If a template makes me reluctant to create a case, simplify it.
-
----
-
-## Case Creation Workflow
-
-The canonical workflow for creating a new case is defined in:
-
-`/.ai/workflows/new-case.md`
-
-Any AI model working on a new case should follow that workflow after reading this file.
-
-At a minimum, the workflow is:
-
-```
-new problem / experience
-        ↓
-classify: case, inbox item, or no artifact
-        ↓
-search related existing cases
-        ↓
-capture my unaided mental model
-        ↓
-challenge assumptions and identify evidence gaps
-        ↓
-investigate / experiment / research
-        ↓
-review competing explanations
-        ↓
-write the case
-        ↓
-review the final reasoning
-        ↓
-create or update the GitHub case
-```
+Follow `.ai/workflows/new-case.md` for new cases. Case structure is defined by `templates/case.md` (or `templates/retrospective-case.md` for reconstructions from memory). The two most important sections are **What I currently think** and **What changed in my understanding?**
 
 ### Context loading rule
 
-An AI agent should **not** read the entire repository by default.
+Do not read the entire repository by default.
 
-For a new case, load context progressively:
-
-1. Read `AGENTS.md`.
+1. This file is already loaded.
 2. Read the relevant template.
-3. Search `cases/` for related topics, technologies, or problems.
-4. Read only the related cases needed to establish context.
-5. Load other repository material only when the case actually depends on it.
-
-This keeps sessions efficient and makes the repository scale.
+3. Search `cases/` (titles, `topics:` front-matter) for related topics, technologies, or problems.
+4. Read only the related cases needed to establish context — prefer the relevant sections over whole files.
+5. Load other material only when the task depends on it.
 
 ### New case interaction rule
 
-When I say I have a new case, the agent should **not immediately write polished Markdown**.
+Do not immediately write polished Markdown. First help me reconstruct and test the reasoning. Ask targeted questions that distinguish competing explanations or establish evidence. Preserve uninvestigated points as open questions or hypotheses rather than filling the gap.
 
-First help me reconstruct and test the reasoning.
+### Reviewing a case
 
-Ask targeted questions when necessary. Prefer questions that distinguish between competing explanations or establish evidence.
+Challenge before rewriting. Look for: unsupported assumptions; missing evidence; alternative explanations; correlation mistaken for causation; missing failure modes; incorrect Spark / JVM / distributed-systems assumptions; weak experimental design; conclusions stronger than the evidence; contradictions with existing cases.
 
-If I have not yet investigated something, preserve it as an open question or hypothesis rather than filling the gap.
-
-Only construct the final case once the reasoning is sufficiently clear.
-
----
-
-## Case Workflow
-
-Default workflow:
-
-```
-interesting problem
-      ↓
-quick inbox entry
-      ↓
-worth investigating?
-      ↓
-create a case
-      ↓
-write current mental model
-      ↓
-list questions / assumptions
-      ↓
-observe / measure / experiment / research
-      ↓
-AI challenges the reasoning
-      ↓
-form conclusion
-      ↓
-record what changed in my understanding
-      ↓
-extract one reusable lesson
-```
-
-A case should not be judged by how polished it looks.
-
-The main question is:
-
-**Did this case improve how I will reason about a future problem?**
-
----
-
-## Case Structure
-
-A normal case should roughly contain:
-
-```markdown
-# [Case title]
-
-## Problem
-What am I trying to understand or solve?
-
-## What I currently think
-My mental model before research or AI assistance.
-
-## Questions
-What specifically do I not understand?
-
-## Observations
-What do I actually know from measurements, logs, behavior, documentation, etc.?
-
-## Hypotheses
-What explanations currently seem plausible?
-
-## Investigation
-Experiments, evidence, research, source-code findings, or reasoning.
-
-## Conclusion
-What do I now believe and why?
-
-## What changed in my understanding?
-What would I explain differently now?
-
-## Reusable lesson
-What should I carry into future engineering problems?
-
-## Open questions
-What remains unclear?
-```
-
-The two most important sections are:
-
-- **What I currently think**
-- **What changed in my understanding?**
-
-They preserve the learning process instead of only storing the final answer.
-
----
-
-## How AI Should Review a Case
-
-When reviewing a case, prefer to challenge it before rewriting it.
-
-Useful review criteria:
-
-- unsupported assumptions;
-- missing evidence;
-- alternative explanations;
-- correlation mistaken for causation;
-- missing failure modes;
-- incorrect Spark/JVM/distributed-systems assumptions;
-- weak experimental design;
-- conclusions stronger than the evidence allows;
-- contradictions with existing repository knowledge.
-
-Do not rewrite the case until the reasoning has been reviewed.
-
----
-
-## Role of Real Work
-
-My current work should be the main source of cases.
-
-I want to actively seek work involving:
-
-- difficult performance problems;
-- expensive workloads;
-- streaming reliability;
-- memory behavior;
-- architectural debt;
-- ingestion design;
-- migrations;
-- observability;
-- production incidents;
-- framework/library design;
-- scalability questions;
-- cost/performance trade-offs.
-
-The goal is not to collect more technologies.
-
-The goal is to increase the size and ambiguity of the technical problems I can independently own.
-
----
-
-## Role of My Career Advisor / Tech Lead
-
-My tech lead is also my career advisor.
-
-I want to use this relationship as a feedback loop.
-
-Rather than asking only:
-
-> What should I learn?
-
-I should bring concrete artifacts and ask questions such as:
-
-- What would a Staff Engineer notice here that I missed?
-- Where is my reasoning weak?
-- What assumptions would you challenge?
-- How would you have investigated this differently?
-- What larger technical responsibility would demonstrate the next level?
-- Which capability am I overestimating or underdeveloping?
-
-Useful feedback should be captured in the relevant case when appropriate.
-
-The long-term aim is to compare how I reason about technical problems with how a strong tech lead reasons about them, and gradually reduce the gap.
-
----
-
-## Career Strategy
-
-The broad career plan is:
-
-### Stage 1 — Strengthen systems depth
-
-Use project problems to deepen understanding of:
-
-- Spark execution;
-- JVM behavior;
-- memory;
-- serialization;
-- shuffle;
-- storage;
-- networking;
-- concurrency;
-- distributed failure modes;
-- streaming semantics;
-- checkpointing / recovery;
-- backpressure;
-- Kafka internals;
-- observability;
-- performance measurement.
-
-Study these through real problems instead of as an abstract curriculum whenever possible.
-
----
-
-### Stage 2 — Move from implementation to design
-
-Seek opportunities to become involved before implementation begins.
-
-Practice:
-
-- framing problems;
-- identifying constraints;
-- comparing alternatives;
-- making trade-offs explicit;
-- writing lightweight design notes;
-- explaining why one design was chosen over another.
-
----
-
-### Stage 3 — Own a technical area
-
-Progress from:
-
-**implementing something**
-
-to:
-
-**understanding it**
-
-to:
-
-**reviewing changes to it**
-
-to:
-
-**making design decisions around it**
-
-to:
-
-**being the person others ask about it**
-
-Potential areas include:
-
-- ingestion;
-- Spark streaming;
-- Databricks performance;
-- file-processing architecture;
-- platform cost optimization;
-- Delta architecture;
-- reliability.
-
----
-
-### Stage 4 — Increase technical leverage
-
-Develop the ability to:
-
-- review others' designs;
-- mentor engineers;
-- create reusable investigation methods;
-- improve team engineering practices;
-- influence system design across components or teams.
-
-This is the direction toward Staff Engineer / Architect-level work.
-
----
-
-## AI / AI-Platform Direction
-
-Do not pivot into generic “AI engineer” work merely because AI is popular.
-
-Instead, add AI-platform knowledge gradually on top of existing data-platform strengths.
-
-Relevant areas may include:
-
-- data infrastructure for AI systems;
-- RAG / retrieval architectures;
-- embeddings and vector search;
-- MLflow / model lifecycle;
-- model serving;
-- AI observability;
-- evaluation;
-- governance;
-- inference cost;
-- production data pipelines for AI workloads.
-
-The goal is to become stronger at **data + AI platforms**, not merely at building chatbot demos.
-
----
-
-## Future Repository Growth
-
-Do **not** create all future folders immediately.
-
-New structure should be added only when repeated use creates a real need.
-
-Possible future additions:
-
-```
-decisions/
-labs/
-playbooks/
-career/
-.ai/
-```
-
-The `.ai/` directory is now justified for stable, reusable agent workflows. Keep it small and repository-specific.
-
-### `decisions/`
-
-For architectural decisions where the important question is:
-
-**Why did I choose A instead of B?**
-
-Possible structure:
-
-```markdown
-# Context
-
-# Constraints
-
-# Options
-
-# Decision
-
-# Why
-
-# Consequences
-
-# What would make me reconsider
-```
-
----
-
-### `labs/`
-
-For executable experiments and reproducible technical investigations.
-
-Create this when cases repeatedly require code or experiments that do not fit naturally inside Markdown.
-
----
-
-### `playbooks/`
-
-For reusable methods that have emerged from several cases.
-
-Examples:
-
-- investigating a slow Spark job;
-- diagnosing memory pressure;
-- evaluating a streaming design;
-- reviewing an architecture.
-
-A playbook should emerge from experience, not be copied from generic advice.
-
----
-
-### `career/`
-
-For development evidence once there is enough material to justify it.
-
-Possible contents:
-
-- competency map;
-- evidence log;
-- advisor feedback;
-- quarterly reviews.
-
----
-
-### `.ai/`
-
-Contains only stable, reusable workflows and checks for AI-assisted work on this repository.
-
-Do not turn it into a prompt collection.
-
-Prefer workflows that describe:
-
-- what context to load;
-- what reasoning process to follow;
-- what questions to ask;
-- what evidence standard to apply;
-- what artifact to produce;
-- what checks to perform before committing.
-
----
-
-## Future Agentic AI Strategy
-
-Agentic AI becomes useful once the repository contains enough of my own reasoning.
-
-Agents should work over the repository, not replace it.
-
-Good future agent jobs include:
-
-### 1. Inbox triage
-
-Identify which entries deserve cases, which relate to existing knowledge, and which can be ignored.
-
-### 2. Knowledge linking
-
-Suggest relationships between cases, concepts, decisions, and playbooks.
-
-### 3. Reasoning review
-
-Challenge completed cases for assumptions, missing evidence, failure modes, and contradictions.
-
-### 4. Experiment generation
-
-Propose or scaffold experiments that distinguish competing hypotheses.
-
-### 5. Knowledge maintenance
-
-Suggest updates to canonical concept notes when several cases change or refine my mental model.
-
-### 6. Career analysis
-
-Review recent work and identify evidence of deeper ownership, recurring weaknesses, and gaps in experience.
-
-### 7. Architecture review
-
-Act as an adversarial reviewer of design proposals and identify hidden assumptions or operational risks.
+A case is judged by one question: **did it improve how I will reason about a future problem?**
 
 ---
 
 ## Agent Safety Rule
 
-Agents may **propose** changes to canonical knowledge.
-
-They should not silently rewrite established conclusions.
-
-Prefer a pull-request / review mindset:
+Agents may **propose** changes to canonical knowledge; they do not silently rewrite established conclusions.
 
 **agent proposes → I inspect → I accept, modify, or reject**
 
-The repository should remain a record of my engineering judgment, not an automatically generated wiki.
+Do not commit, push, or open pull requests unless I ask.
 
 ---
 
-## Metadata Strategy
+## Metadata
 
-Do not add metadata until there are enough files for it to solve a real problem.
-
-When needed, prefer a very small schema, for example:
+Keep front-matter minimal:
 
 ```yaml
 ---
@@ -732,116 +88,31 @@ created: 2026-10-02
 topics:
   - spark
   - memory
-  - io
 ---
 ```
 
-Avoid elaborate scoring, confidence systems, difficulty levels, review intervals, and other maintenance-heavy metadata unless they prove genuinely useful.
+No scoring, confidence systems, difficulty levels, review intervals, or other maintenance-heavy metadata unless they prove genuinely useful.
 
 ---
 
 ## Confidentiality
 
-This repository contains **generalized personal learning**, not employer or customer documentation.
+This repository contains **generalized personal learning**, not employer or customer documentation. Never include: customer names; proprietary source code; credentials; internal URLs; production data; internal identifiers; unreleased architecture; confidential incident details; commercially sensitive costs; anything prohibited by employer/client policy.
 
-Never include:
+Rewrite work experiences as generic engineering problems.
 
-- customer names;
-- proprietary source code;
-- credentials;
-- internal URLs;
-- production data;
-- internal identifiers;
-- unreleased architecture;
-- confidential incident details;
-- commercially sensitive costs;
-- anything prohibited by employer/client policy.
-
-Work experiences should be rewritten as generic engineering problems.
-
-Example:
-
-Bad:
-
-> Customer X's ingestion system uses internal service Y and costs €Z.
-
-Better:
-
-> A high-volume binary-file ingestion system exhibited unexpectedly high memory usage.
-
-The transferable learning matters. The proprietary context does not.
-
----
-
-## Git / Mobile Workflow
-
-The repository is plain Markdown + Git.
-
-Current Android workflow:
-
-**Obsidian → local repository → GitSync → GitHub**
-
-Use the phone primarily for:
-
-- quick capture;
-- reading;
-- light edits;
-- adding hypotheses or questions.
-
-Use desktop primarily for:
-
-- full investigations;
-- experiments;
-- larger case write-ups;
-- agentic workflows;
-- refactoring repository structure.
-
-Keep the repository portable and tool-independent.
-
-Avoid making Obsidian, Claude, ChatGPT, or any other single tool a hard dependency.
+> Bad: Customer X's ingestion system uses internal service Y and costs €Z.
+> Better: A high-volume binary-file ingestion system exhibited unexpectedly high memory usage.
 
 ---
 
 ## Tool Independence
 
-`AGENTS.md` is the canonical description of repository intent.
-
-Vendor-specific files such as `CLAUDE.md` may exist later, but they should remain thin and point back to this file where practical.
-
-The knowledge should belong to the repository, not to a specific AI vendor.
-
----
-
-## What Success Looks Like
-
-Success is **not**:
-
-- hundreds of Markdown files;
-- a beautiful knowledge graph;
-- daily note-taking;
-- knowing every Spark or Kafka feature;
-- maintaining a complex PKM system.
-
-Success is:
-
-- repeatedly turning real work problems into deeper understanding;
-- becoming better at identifying what I do not know;
-- improving how I investigate technical systems;
-- becoming more evidence-driven;
-- making better architecture decisions;
-- building reusable engineering judgment;
-- increasing the size and ambiguity of problems I can own;
-- developing toward Staff Engineer / Data Platform Architect / Solutions Architect-level responsibility.
-
-A successful year may contain only 10–15 excellent cases.
-
-Depth matters more than volume.
+Plain Markdown + Git, edited from Obsidian (desktop and Android via GitSync). Keep it portable; no single tool is a hard dependency. `AGENTS.md` is the canonical agent instruction file; vendor-specific files such as `CLAUDE.md` stay thin and point here.
 
 ---
 
 ## Default Instruction to Any AI Model
-
-When working with this repository:
 
 1. Read `AGENTS.md` first.
 2. Load only the template and existing cases relevant to the current task.
