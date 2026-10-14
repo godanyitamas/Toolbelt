@@ -72,8 +72,6 @@ Agents may **propose** changes to canonical knowledge; they do not silently rewr
 
 **agent proposes → I inspect → I accept, modify, or reject**
 
-Do not commit, push, or open pull requests unless I ask.
-
 ---
 
 ## Metadata
