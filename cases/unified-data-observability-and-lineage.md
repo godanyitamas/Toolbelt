@@ -9,6 +9,8 @@ topics:
   - delta-lake
   - kafka
   - databricks
+  - freshness
+  - file-ingestion
 ---
 
 # Designing unified processing telemetry across files, Kafka, and Delta
