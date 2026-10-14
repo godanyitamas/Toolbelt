@@ -1,3 +1,16 @@
+---
+type: case
+status: done
+created: 2026-10-04
+topics:
+  - metadata-governance
+  - ownership
+  - unity-catalog
+  - data-lineage
+  - ai-platform
+  - databricks
+---
+
 # Who owns the metadata? — Databricks comments for Genie
 
 > Historical reconstruction based on memory and available implementation context. Details are generalized; remembered explanations should not be treated as verified fact.

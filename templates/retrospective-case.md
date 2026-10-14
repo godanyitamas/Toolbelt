@@ -1,3 +1,11 @@
+---
+type: case
+status: active
+created: YYYY-MM-DD
+topics:
+  - 
+---
+
 # [Retrospective case title]
 
 > Historical reconstruction based on [memory / records / both]. Details may be incomplete. Treat remembered explanations as recollection, not verified fact.

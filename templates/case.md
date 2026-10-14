@@ -1,3 +1,11 @@
+---
+type: case
+status: active
+created: YYYY-MM-DD
+topics:
+  - 
+---
+
 # [Case title]
 
 ## Problem

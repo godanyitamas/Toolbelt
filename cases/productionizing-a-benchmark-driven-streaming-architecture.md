@@ -1,3 +1,17 @@
+---
+type: case
+status: done
+created: 2026-10-06
+topics:
+  - spark-structured-streaming
+  - file-ingestion
+  - cluster-sizing
+  - partitioning
+  - coordination
+  - delta-lake
+  - databricks
+---
+
 # Productionizing a Benchmark-Driven Streaming Architecture
 
 > Historical reconstruction based on memory. The system and environment details are generalized; exact measurements and some original design rationale are not available as contemporaneous records.

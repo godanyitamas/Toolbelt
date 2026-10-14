@@ -1,3 +1,15 @@
+---
+type: case
+status: done
+created: 2026-10-06
+topics:
+  - late-arriving-data
+  - freshness
+  - joins
+  - spark-structured-streaming
+  - delta-lake
+---
+
 # Replacing a Fixed Batch Delay with Bounded Retry State for Late-Arriving Data
 
 ## Problem

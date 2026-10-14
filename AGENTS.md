@@ -89,6 +89,8 @@ topics:
 ---
 ```
 
+`status`: `active` (investigation or POC ongoing), `draft` (written, reasoning not yet verified), `done`. `created` is the date the case entered the repository. Reuse existing `topics` values (lowercase kebab-case) before inventing new ones, so topics actually connect cases.
+
 No scoring, confidence systems, difficulty levels, review intervals, or other maintenance-heavy metadata unless they prove genuinely useful.
 
 ---

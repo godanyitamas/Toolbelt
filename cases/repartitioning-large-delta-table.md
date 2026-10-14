@@ -1,3 +1,16 @@
+---
+type: case
+status: done
+created: 2026-10-05
+topics:
+  - migration
+  - partitioning
+  - data-quality
+  - spark-structured-streaming
+  - delta-lake
+  - unity-catalog
+---
+
 # Repartitioning a Large Delta Table During Migration
 
 > Historical reconstruction based on memory. The work and environment details have been generalized; exact timings, file counts, and some operational details are no longer available.

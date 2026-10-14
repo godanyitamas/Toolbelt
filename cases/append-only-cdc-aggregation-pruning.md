@@ -1,3 +1,16 @@
+---
+type: case
+status: done
+created: 2026-10-04
+topics:
+  - spark-performance
+  - joins
+  - partitioning
+  - cdc
+  - delta-lake
+  - databricks
+---
+
 # Reducing work in an append-only CDC aggregation job
 
 > Historical reconstruction based on recollection of the work and Spark UI observations. Workload scale and environment details are generalized; exact performance figures are not available here.

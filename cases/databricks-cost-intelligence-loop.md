@@ -1,3 +1,15 @@
+---
+type: case
+status: active
+created: 2026-10-04
+topics:
+  - cost-optimization
+  - observability
+  - cluster-sizing
+  - spark-structured-streaming
+  - databricks
+---
+
 # Building a workload-aware Databricks cost intelligence loop
 
 ## Problem

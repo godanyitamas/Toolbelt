@@ -1,3 +1,16 @@
+---
+type: case
+status: draft
+created: 2026-10-03
+topics:
+  - spark-performance
+  - memory
+  - jvm
+  - file-ingestion
+  - spark-structured-streaming
+  - delta-lake
+---
+
 # Reworking a File Parser Under Memory and Runtime Pressure
 
 > Retrospective draft based on recollection. Workload and environment details have been generalized; verify the remaining questions before treating the explanation as final.
