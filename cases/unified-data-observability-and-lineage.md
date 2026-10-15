@@ -66,6 +66,7 @@ Preserved as written at the start; later sections show what was challenged.
 - Some jobs run **multiple streaming queries** in one Spark session.
 - Jobs run on dedicated job clusters. All writes are append-only.
 - Jobs perform multiple writes inside one `foreachBatch`, sequentially on the batch thread, each to a different table; no job writes the same table twice in one batch. No query uses streaming stateful operators, and no job writes in parallel threads (Futures / thread pools). Established by reading the current modules, not yet checked at runtime.
+- One Kafka ingestor module uses a different config type from all other modules.
 - Most jobs in all layers already propagate the `foreachBatch` `batchId` (a long) as a column in their output data.
 - Idempotent Delta writes currently use `txnAppId` = a hand-written job name with a launch-date postfix, and `txnVersion` = `batchId`.
 - Kafka Bronze persists the raw, non-deserialized message together with topic, partition, offset and timestamp.
@@ -129,6 +130,17 @@ require(qid != null, "not inside a streaming batch")
 The query id has exactly the required lifetime. The same key identifies a batch in Delta's transaction records, in the data, and in telemetry.
 
 **Process continuity.** The query id resets with a new checkpoint, so it cannot identify a process over time. `job_id` provides continuity until a job is recreated (e.g. Terraform replace, workspace move); a small process dimension (`job_id` → logical process) absorbs that. Consumers select further columns (e.g. `source_id`) to distinguish streams within a job.
+
+### Reporting contract
+
+Reporting takes a small trait in core that both config types extend. It exposes only what reporting cannot obtain elsewhere: the Databricks job identity (job id, job name, job run id, task name, task run id) and the existing monitoring catalog/schema (existing core behaviour, out of scope here). It deliberately excludes:
+
+- runtime values: query id and batch id, which come from the stream;
+- per-input values: `source_id` and `source_type`, set by the shared read helper because one module can read several sources.
+
+The identity values come from job parameters defined uniformly in Terraform. The trait has no default implementations, so a config that lacks a member fails to compile instead of reporting a wrong value.
+
+**Accepted trade-off:** the parameter extraction is implemented identically in both config types (two copies) rather than in one shared parser. Judged acceptable because the parameters are defined once in Terraform and are not expected to change. Risk: the copies drift if one is edited without the other.
 
 ### Stamp on write, record on read
 
@@ -292,6 +304,7 @@ Gold 52 traces back to `qS/377` → `qB/4812` (files `a_1010`, `b_1010`) and `qK
 | Modification-time window matching | Link data files to producer batch windows | Heuristic; needs table → writer mapping | Fallback for jobs without stamp columns |
 | Delta one row per consumed data file | Per-file arrival and lineage without offsets | Heavier; upstream unit is exact | Fallback |
 | Producer record from the target table's Delta log (`txn` actions carry query id + batch id) | Unit-level "what's waiting" for Delta without `output_id` | v1 answers Delta waiting in time; needs verification (empty appends, log retention) | Fallback if unit-level pending is ever needed |
+| Value object built per module (`Config => ReportingContext`) | Decouples config classes from reporting; easier to test | Two config types, both owned by core; the trait gives the same compile-time guarantee with less code | Fallback if a config outside core's control must report |
 | Kafka one row per message | Per-message detail | Duplicates Bronze at data volume | Rejected |
 | Reading checkpoint `metadata` for query id | Simple source of query id | Violates constraint | Rejected |
 | Generic columns / struct per type / table per type | Avoid sparse nulls | Mixed semantics / clumsier SQL / UNION everywhere | Rejected |
