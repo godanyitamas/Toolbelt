@@ -70,7 +70,8 @@ Preserved as written at the start; later sections show what was challenged.
 - Idempotent Delta writes currently use `txnAppId` = a hand-written job name with a launch-date postfix, and `txnVersion` = `batchId`.
 - Kafka Bronze persists the raw, non-deserialized message together with topic, partition, offset and timestamp.
 - Consumed Delta/Parquet data exposes `_metadata` columns: file path, row index within the file, file size, file timestamp.
-- Databricks identifiers are read from the SparkSession conf; they are empty strings when not provided (local testing).
+- Databricks job identifiers are **not** available from the SparkSession conf: `conf.getOption("spark.databricks.job.*")` returned null on a real job run. Read as SparkContext local properties instead, job id, job run id and task run id are returned; there is no job name. (Observed in a JAR job; which local property is the job run vs the task run is not yet verified.)
+- The query id local property (`sql.streaming.queryId`) returned a value both locally and on Databricks. This shows the mechanism works, not yet that the value has the persistent lifetime (H1).
 
 ### Design constraints (my decisions)
 
@@ -80,6 +81,8 @@ Preserved as written at the start; later sections show what was challenged.
 - One table, one writer.
 - Capture now what cannot be recovered later (e.g. file size); compute the rest downstream.
 - Prefer explicit, type-specific columns over generic columns that mix different semantics.
+- `sql.streaming.queryId` is an internal Spark key, not a public API: a runtime upgrade could rename or drop it (fails loudly through the `require`).
+- `sparkContext` is not available under Spark Connect (serverless / standard access mode), so both the query id and the local-property job ids depend on dedicated job clusters. A constraint for any future compute migration.
 
 ### Source-specific facts
 
@@ -115,6 +118,7 @@ require(qid != null, "not inside a streaming batch")
 ```
 
 - Each query runs its micro-batches on its own thread, so concurrent queries in one job each see their own id.
+- **Source of truth:** the checkpoint's `metadata` file, where Spark persists the id on first start and reads it back on restart. Documented views: `StreamingQuery.id`, listener events. The implementation reads the internal local property and validates it against `StreamingQuery.id`. The id is checkpoint-scoped on purpose: that lifetime is what `txnAppId` needs. The constraint "do not derive identity from the checkpoint location" is about not depending on paths or parsing Spark's internal files by hand.
 - Chosen over a session-wide listener: with several queries per session, a single "current id" in a listener is overwritten by whichever stream started last. Because the query id is also `txnAppId`, a mixed-up id would not just corrupt telemetry: Delta can skip writes as "already committed" (silent data loss).
 
 **Use the query id as `txnAppId`.** Delta skips a write whose `txnVersion` is at or below the last one recorded for its `txnAppId`, so the app id must change exactly when the checkpoint is reset:
@@ -298,7 +302,7 @@ Gold 52 traces back to `qS/377` → `qB/4812` (files `a_1010`, `b_1010`) and `qK
 
 | # | Hypothesis | POC step |
 |---|---|---|
-| H1 | The local property returns the persistent query id: stable across restarts, new after a checkpoint reset, distinct per concurrent query | 1 |
+| H1 | The local property returns the persistent query id: equal to the documented `StreamingQuery.id`, stable across restarts, new after a checkpoint reset, distinct per concurrent query | 1 |
 | H2 | `txnAppId` = query id gives correct idempotency: replays skipped, nothing skipped after a checkpoint reset, including a kill between two writes of one batch (first skipped on replay, second written) | 2 |
 | H3 | Telemetry append with the same `txnAppId`/`txnVersion` cannot duplicate on replay | 2 |
 | H4 | Stamping and per-batch aggregations add acceptable overhead | 3 |
@@ -314,7 +318,7 @@ Gold 52 traces back to `qS/377` → `qB/4812` (files `a_1010`, `b_1010`) and `qK
 
 **Step 0: Setup and acceptance queries.** Write the v1 questions as acceptance queries: staleness per process, delay decomposition for one file, missing-file detection, Kafka continuity/lag per partition, lineage from a Gold batch to files and Kafka ranges. Sandbox pipelines on synthetic data whose rows carry their own file name and row number (ground truth), including a job running two queries.
 
-**Step 1: Identity (H1).** Log the query id and `batchId` in every batch of the two-query job; restart; reset one checkpoint. Pass: ids distinct per query, stable across restart, new after reset.
+**Step 1: Identity (H1).** Log `StreamingQuery.id` in `main` after `start()` and the local-property id in the first batch (must be equal; keep this log to re-check after runtime upgrades). Log the query id and `batchId` in every batch of the two-query job; restart; reset one checkpoint. Pass: ids distinct per query, stable across restart, new after reset.
 
 **Step 2: Idempotency (H2, H3).** Use the query id as `txnAppId` for data and telemetry writes. Kill after the data write but before the checkpoint commit; kill between two data writes of one batch; restart. Reset a checkpoint and confirm new writes land.
 
@@ -335,6 +339,8 @@ Gold 52 traces back to `qS/377` → `qB/4812` (files `a_1010`, `b_1010`) and `qK
 ## Decisions
 
 **Made:** one table, one writer; grains (file / Kafka partition / upstream unit); offset-level Kafka detail from Bronze; query id from the SparkContext local property; query id as `txnAppId`; `upstream_batch_id` as Long; explicit type-prefixed columns; legacy reporting optional, new reporting mandatory, dual reporting during migration; Delta "what's waiting" answered in time, not units (the Delta-log producer record stays as a fallback, not rejected).
+
+**Leaning:** job identity (`job_id`, `job_run_id`, `task_run_id`, `job_name`, `task_key`) from Databricks dynamic value references passed as JAR task parameters (`{{job.id}}`, `{{job.run_id}}`, `{{task.run_id}}`, `{{job.name}}`, `{{task.name}}`), parsed once in `main`; local properties as fallback for the ids; null when absent. Would resolve R5 and R9. Guards: a deploy-time check that every JAR task passes the parameters; a runtime warning when running on Databricks without them; a monitoring query for null `job_id` in production. Not yet tested: runs with overridden JAR parameters, repair runs / task retries, run id vs task run id on a multi-task job.
 
 **Pending:** R2–R9 above; physical layout (`partitionBy` / clustering, retention); table name and ownership; rollout order and timing of the `txnAppId` switch.
 
