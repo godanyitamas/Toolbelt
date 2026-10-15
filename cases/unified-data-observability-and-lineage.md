@@ -70,6 +70,8 @@ Preserved as written at the start; later sections show what was challenged.
 - Most jobs in all layers already propagate the `foreachBatch` `batchId` (a long) as a column in their output data.
 - Idempotent Delta writes currently use `txnAppId` = a hand-written job name with a launch-date postfix, and `txnVersion` = `batchId`.
 - Kafka Bronze persists the raw, non-deserialized message together with topic, partition, offset and timestamp.
+- The production legacy `processed_files` table (file-ingesting jobs only, roughly 50–75 file datasources) is about 65 GB with many small files, most likely not maintained by OPTIMIZE/VACUUM. Not yet broken down: live data vs old file versions vs per-file overhead (`DESCRIBE DETAIL`: `sizeInBytes`, `numFiles`, row count).
+- Downstream readers of the telemetry table will include ad-hoc queries, monitoring jobs and one large archiving job. Goal: move monitoring jobs and dashboards onto the gold aggregation rather than the raw table.
 - Consumed Delta/Parquet data exposes `_metadata` columns: file path, row index within the file, file size, file timestamp.
 - Databricks job identifiers are **not** available from the SparkSession conf: `conf.getOption("spark.databricks.job.*")` returned null on a real job run. Read as SparkContext local properties instead, job id, job run id and task run id are returned; there is no job name. (Observed in a JAR job; which local property is the job run vs the task run is not yet verified.)
 - The query id local property (`sql.streaming.queryId`) returned a value both locally and on Databricks. This shows the mechanism works, not yet that the value has the persistent lifetime (H1).
@@ -199,7 +201,14 @@ upstream_query_id     String     nullable
 upstream_batch_id     Long       nullable   (was String; agreed to change)
 ```
 
-Physical layout: to be determined.
+Physical layout (leaning):
+
+- `batch_date DATE GENERATED ALWAYS AS (CAST(batch_end_ts AS DATE))` (UTC): the reporter writes at batch end, so the write date is derived, not a second notion of time.
+- Liquid clustering on (`batch_date`, `job_name`) plus predictive optimization. `job_name` because people filter by it and `job_id` does not survive job recreation; a rename only affects the label.
+- Reasoning: the table is append-only in time order, so files are already roughly time-ordered and min/max statistics skip on time without partitions; identity is the interleaved dimension that clustering fixes. Clustering keys can change later without a rewrite.
+- Volume: file rows ≈ legacy `processed_files` rows (the sizing baseline). Kafka is one row per batch × partition, which is not automatically the smaller grain: a high-partition topic with frequent triggers can produce more rows per day than a file source.
+- Watch items: predictive optimization only runs on Unity Catalog managed tables; clustering is applied mostly during OPTIMIZE, so the newest data is unclustered until compaction. Appends from many writers do not conflict with OPTIMIZE.
+
 
 - **Unique key:** (`query_id`, `batch_id`, `source_id`) + object (`file_path` | `kafka_partition` | (`upstream_query_id`, `upstream_batch_id`)).
 - **Writes:** one append per batch with `txnAppId` = query id and `txnVersion` = batch id, so a replayed batch cannot duplicate telemetry.
@@ -239,7 +248,18 @@ Rules: Delta = full three-part Unity Catalog name; Kafka = topic (prefix cluster
 
 ### Derived objects
 
-- **Gold aggregation** over the telemetry table: per batch (duration, worst wait, volume), per process (staleness), per source (data age), lineage hops.
+- **Gold aggregation** over the telemetry table, one table per kind of question:
+
+| Table | One row per | Contains | Answers |
+|---|---|---|---|
+| `batch_facts` | batch (`query_id`, `batch_id`) | ids, layer, `source_id`s, start/end, duration, rows, bytes, objects, earliest arrival, worst wait | duration, volume, size vs duration, waits; collapses per-object rows (R2) |
+| `lineage_edges` | consumer batch → upstream batch | both keys, upstream `batch_end_ts`, consumer start/end, hop delay | multi-hop freshness by joining 2–3 timestamped edges, no raw walk |
+| `process_status` | process / stream (current) | last batch end, staleness, expected cadence from the dimension, alert flag | alerting, morning email |
+| `daily_rollup` | process × source × day | p50/p95 duration and wait, volume, batch count | trends, reporting |
+
+  Kafka continuity / lag per (batch, partition) sits beside `batch_facts`.
+
+  Built incrementally: each batch writes its telemetry in one commit, so a streaming read of the telemetry table always sees complete batches and `batch_facts` is a stateless aggregation per micro-batch. `lineage_edges` looks up the upstream end time in `batch_facts` by key (cluster `batch_facts` on `query_id`, `batch_id`). Edge case: upstream writes data, then telemetry, so a consumer's telemetry row can arrive before its upstream's; the edge builder keeps unmatched edges as bounded retry state and expires them after `k` (the pattern from `cases/late-arriving-data-with-bounded-retry-state.md`).
 - **Process dimension:** `job_id` (+ `source_id`) → logical process, owner, expected cadence/deadline, tables written (needed for terminal tables). Business can own expectations; engineering owns collection.
 
 ### Freshness
@@ -257,6 +277,8 @@ Walk from a Gold batch: Gold rows (`upstream_*` = Silver unit) → Silver's rows
 
 - Gives exactly which upstream batches and objects a batch read (level B); level A via timestamps.
 - Not per record (level C); if ever needed, file path + row index from `_metadata` is an exact record address.
+- Time window for lineage lookups: an upstream batch always ends before its consumer starts, so upstream rows lie in `[consumer batch_date − k, consumer batch_date]`. `k` bounds **processing lag between hops** (expected 1–2 days), not data age: an older file functional timestamp affects data-age metrics, not which rows lineage must find. A filter on the consumer's date alone would drop upstream rows reported on earlier days.
+- Identity filters only prune when the identity in hand is a clustering key. A lineage step starts from `upstream_query_id`, so raw lookups resolve `query_id → job_name` first (from `batch_facts`), then filter by `job_name` + the `k` window. Monitoring uses `lineage_edges` and never walks the raw table.
 - Limits: horizon bounded by Bronze retention; Kafka offsets unique only while a topic exists; legacy data without `_query_id` falls back to (`source_id`, `batch_id`) + time ordering.
 
 ### Guardrails
@@ -306,6 +328,7 @@ Gold 52 traces back to `qS/377` → `qB/4812` (files `a_1010`, `b_1010`) and `qK
 | Producer record from the target table's Delta log (`txn` actions carry query id + batch id) | Unit-level "what's waiting" for Delta without `output_id` | v1 answers Delta waiting in time; needs verification (empty appends, log retention) | Fallback if unit-level pending is ever needed |
 | Value object built per module (`Config => ReportingContext`) | Decouples config classes from reporting; easier to test | Two config types, both owned by core; the trait gives the same compile-time guarantee with less code | Fallback if a config outside core's control must report |
 | Kafka one row per message | Per-message detail | Duplicates Bronze at data volume | Rejected |
+| Partitioning by `job_name` × `process_date` (+ `layer`) | Partition pruning on identity and time, the main query pattern | Tiny partitions (a table this size needs no partitioning) and a small file per batch per job partition; `layer` has 3 skewed values. Lineage would need cross-day partition reads anyway | Rejected; date-only partitioning remains possible for cheap retention |
 | Reading checkpoint `metadata` for query id | Simple source of query id | Violates constraint | Rejected |
 | Generic columns / struct per type / table per type | Avoid sparse nulls | Mixed semantics / clumsier SQL / UNION everywhere | Rejected |
 
@@ -324,6 +347,8 @@ Gold 52 traces back to `qS/377` → `qB/4812` (files `a_1010`, `b_1010`) and `qK
 | H7 | The lineage walk returns exactly the true contributing upstream units and files | 6 |
 | H8 | The legacy fallback (batch id + time ordering) is acceptable until old data ages out | 7 |
 | H9 | New file rows match legacy `processed_files` during dual reporting | 7 |
+| H10 | The edge builder needs bounded retry: a consumer's telemetry row can arrive before its upstream's telemetry row | 6 |
+| H11 | Liquid clustering + predictive optimization keep file counts and lookup cost acceptable at production commit rates | 3, 6 |
 
 ---
 
@@ -341,7 +366,7 @@ Gold 52 traces back to `qS/377` → `qB/4812` (files `a_1010`, `b_1010`) and `qK
 
 **Step 5: Failure and replay.** Kill mid-batch at different points; confirm one row per object per unit and that the guardrail checks behave.
 
-**Step 6: Gold aggregation and acceptance queries (H7).** Build the gold aggregation, a hand-filled process dimension and CHECK constraints; run the acceptance queries; compare the lineage walk with ground truth.
+**Step 6: Gold aggregation and acceptance queries (H7, H10, H11).** Build the gold tables (`batch_facts`, `lineage_edges`, `process_status`, `daily_rollup`), a hand-filled process dimension and CHECK constraints; run the acceptance queries; compare the lineage walk with ground truth.
 
 **Step 7: Migration checks (H8, H9).** Run a stream on legacy data without `_query_id`; run dual reporting and reconcile against `processed_files`.
 
@@ -355,7 +380,7 @@ Gold 52 traces back to `qS/377` → `qB/4812` (files `a_1010`, `b_1010`) and `qK
 
 **Leaning:** job identity (`job_id`, `job_run_id`, `task_run_id`, `job_name`, `task_key`) from Databricks dynamic value references passed as JAR task parameters (`{{job.id}}`, `{{job.run_id}}`, `{{task.run_id}}`, `{{job.name}}`, `{{task.name}}`), parsed once in `main`; local properties as fallback for the ids; null when absent. Would resolve R5 and R9. Guards: a deploy-time check that every JAR task passes the parameters; a runtime warning when running on Databricks without them; a monitoring query for null `job_id` in production. Not yet tested: runs with overridden JAR parameters, repair runs / task retries, run id vs task run id on a multi-task job.
 
-**Pending:** R2–R9 above; physical layout (`partitionBy` / clustering, retention); table name and ownership; rollout order and timing of the `txnAppId` switch.
+**Pending:** R2–R9 above; physical layout confirmation (leaning: liquid clustering, see Schema v0) and retention; table name and ownership; rollout order and timing of the `txnAppId` switch.
 
 ## Open questions
 
@@ -366,6 +391,8 @@ Gold 52 traces back to `qS/377` → `qB/4812` (files `a_1010`, `b_1010`) and `qK
 - How will the file inventory be produced for missing-file detection?
 - Which Kafka topics use create time vs log-append time?
 - Is Bronze retention long enough for the required lineage horizon?
+- What does the legacy 65 GB consist of (live data, unvacuumed old versions, small-file overhead)?
+- How does the archiving job read the telemetry table (incremental stream or date ranges)? It is a heavy reader, so it affects layout.
 - Where do Databricks DQM features fit, if at all?
 
 ---
