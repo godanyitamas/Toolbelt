@@ -248,24 +248,24 @@ Rules: Delta = full three-part Unity Catalog name; Kafka = topic (prefix cluster
 
 ### Derived objects
 
-- **Gold aggregation** over the telemetry table, one table per kind of question:
+- **Gold aggregation: one table, `batch_facts`, plus views.** A new table is justified only by a new grain that queries need cheaply; everything else starts as a view and becomes a table only when there is evidence (slow queries, a need for history).
 
-| Table | One row per | Contains | Answers |
-|---|---|---|---|
-| `batch_facts` | batch (`query_id`, `batch_id`) | ids, layer, `source_id`s, start/end, duration, rows, bytes, objects, earliest arrival, worst wait | duration, volume, size vs duration, waits; collapses per-object rows (R2) |
-| `lineage_edges` | consumer batch → upstream batch | both keys, upstream `batch_end_ts`, consumer start/end, hop delay | multi-hop freshness by joining 2–3 timestamped edges, no raw walk |
-| `process_status` | process / stream (current) | last batch end, staleness, expected cadence from the dimension, alert flag | alerting, morning email |
-| `daily_rollup` | process × source × day | p50/p95 duration and wait, volume, batch count | trends, reporting |
+| Object | What it is | When it becomes a table |
+|---|---|---|
+| `batch_telemetry` | raw table, one row per object read | already is |
+| `batch_facts` | **the gold table**, one row per batch (`query_id`, `batch_id`): ids, layer, `source_id`s, start/end, duration, rows, bytes, objects, earliest arrival, worst wait, and `upstream_units ARRAY<STRUCT<source_id, query_id, batch_id>>` | now: the batch is the grain most monitoring questions ask about; collapses per-object rows (R2) |
+| Hop delays / lineage walk | query: self-join of `batch_facts` on `upstream_units` (key lookup; cluster `batch_facts` on `query_id`, `batch_id`) | if lineage queries get slow |
+| Process status | view: `max(batch_end_ts)` per process over the last 1–2 days of `batch_facts`, joined to the process dimension | if the history of states is needed ("how long was it stale") |
+| Daily trends | view: `GROUP BY` process, source, day over `batch_facts` | if dashboards over months of percentiles get slow |
+| Kafka continuity | view over the raw Kafka rows (already one row per batch × partition; a topic-level aggregate would hide a stuck partition) | probably never |
 
-  Kafka continuity / lag per (batch, partition) sits beside `batch_facts`.
-
-  Built incrementally: each batch writes its telemetry in one commit, so a streaming read of the telemetry table always sees complete batches and `batch_facts` is a stateless aggregation per micro-batch. `lineage_edges` looks up the upstream end time in `batch_facts` by key (cluster `batch_facts` on `query_id`, `batch_id`). Edge case: upstream writes data, then telemetry, so a consumer's telemetry row can arrive before its upstream's; the edge builder keeps unmatched edges as bounded retry state and expires them after `k` (the pattern from `cases/late-arriving-data-with-bounded-retry-state.md`).
+  Built incrementally: each batch writes its telemetry in one commit, so a streaming read of the telemetry table always sees complete batches and `batch_facts` is a stateless aggregation per micro-batch. Because hops are joined at query time, an upstream row that has not arrived yet simply shows as null and appears on the next query: no write-time retry state is needed.
 - **Process dimension:** `job_id` (+ `source_id`) → logical process, owner, expected cadence/deadline, tables written (needed for terminal tables). Business can own expectations; engineering owns collection.
 
 ### Freshness
 
 1. **What's done:** duration `end − start`; worst wait `start − earliest arrival` (file modification time, Kafka min timestamp, Delta upstream batch end); staleness `now − max(batch_end_ts)` per process; data age per source.
-2. **What's waiting:** Kafka lag (partition end offset − max consumed); files = inventory entries with no row; Delta: not answered in units. Telemetry records what a batch read, not what it wrote, so a unit that wrote zero rows to a table cannot be told apart from one not yet consumed. v1 answers Delta freshness in time: staleness per process and delay (downstream `batch_end_ts` − upstream `batch_end_ts`).
+2. **What's waiting:** Kafka lag (partition end offset − max consumed) needs the partition **end** offset, which telemetry does not capture (rows hold only what was consumed); its source is open (see Open questions); files = inventory entries with no row; Delta: not answered in units. Telemetry records what a batch read, not what it wrote, so a unit that wrote zero rows to a table cannot be told apart from one not yet consumed. v1 answers Delta freshness in time: staleness per process and delay (downstream `batch_end_ts` − upstream `batch_end_ts`).
 
 Alert when staleness exceeds the expected cadence from the dimension: the business condition, not a crashing monitoring job. "Late arrival" needs an expectation; observed timestamps alone cannot say late.
 
@@ -278,7 +278,7 @@ Walk from a Gold batch: Gold rows (`upstream_*` = Silver unit) → Silver's rows
 - Gives exactly which upstream batches and objects a batch read (level B); level A via timestamps.
 - Not per record (level C); if ever needed, file path + row index from `_metadata` is an exact record address.
 - Time window for lineage lookups: an upstream batch always ends before its consumer starts, so upstream rows lie in `[consumer batch_date − k, consumer batch_date]`. `k` bounds **processing lag between hops** (expected 1–2 days), not data age: an older file functional timestamp affects data-age metrics, not which rows lineage must find. A filter on the consumer's date alone would drop upstream rows reported on earlier days.
-- Identity filters only prune when the identity in hand is a clustering key. A lineage step starts from `upstream_query_id`, so raw lookups resolve `query_id → job_name` first (from `batch_facts`), then filter by `job_name` + the `k` window. Monitoring uses `lineage_edges` and never walks the raw table.
+- Identity filters only prune when the identity in hand is a clustering key. A lineage step starts from `upstream_query_id`, so raw lookups resolve `query_id → job_name` first (from `batch_facts`), then filter by `job_name` + the `k` window. Monitoring uses the `batch_facts` self-join and never walks the raw table.
 - Limits: horizon bounded by Bronze retention; Kafka offsets unique only while a topic exists; legacy data without `_query_id` falls back to (`source_id`, `batch_id`) + time ordering.
 
 ### Guardrails
@@ -329,6 +329,7 @@ Gold 52 traces back to `qS/377` → `qB/4812` (files `a_1010`, `b_1010`) and `qK
 | Value object built per module (`Config => ReportingContext`) | Decouples config classes from reporting; easier to test | Two config types, both owned by core; the trait gives the same compile-time guarantee with less code | Fallback if a config outside core's control must report |
 | Kafka one row per message | Per-message detail | Duplicates Bronze at data volume | Rejected |
 | Partitioning by `job_name` × `process_date` (+ `layer`) | Partition pruning on identity and time, the main query pattern | Tiny partitions (a table this size needs no partitioning) and a small file per batch per job partition; `layer` has 3 skewed values. Lineage would need cross-day partition reads anyway | Rejected; date-only partitioning remains possible for cheap retention |
+| Four gold tables (`batch_facts`, `lineage_edges`, `process_status`, `daily_rollup`, plus `kafka_partition_facts`) | One table per kind of question | Only `batch_facts` has a new grain queries need; the rest are derivable by query or view. Kafka partition facts duplicate raw rows; precomputed edges add write-time retry state for a race that a query-time join handles for free | Set aside; any view can become a table when evidence demands it |
 | Reading checkpoint `metadata` for query id | Simple source of query id | Violates constraint | Rejected |
 | Generic columns / struct per type / table per type | Avoid sparse nulls | Mixed semantics / clumsier SQL / UNION everywhere | Rejected |
 
@@ -347,14 +348,13 @@ Gold 52 traces back to `qS/377` → `qB/4812` (files `a_1010`, `b_1010`) and `qK
 | H7 | The lineage walk returns exactly the true contributing upstream units and files | 6 |
 | H8 | The legacy fallback (batch id + time ordering) is acceptable until old data ages out | 7 |
 | H9 | New file rows match legacy `processed_files` during dual reporting | 7 |
-| H10 | The edge builder needs bounded retry: a consumer's telemetry row can arrive before its upstream's telemetry row | 6 |
-| H11 | Liquid clustering + predictive optimization keep file counts and lookup cost acceptable at production commit rates | 3, 6 |
+| H10 | Liquid clustering + predictive optimization keep file counts and lookup cost acceptable at production commit rates | 3, 6 |
 
 ---
 
 ## POC plan
 
-**Step 0: Setup and acceptance queries.** Write the v1 questions as acceptance queries: staleness per process, delay decomposition for one file, missing-file detection, Kafka continuity/lag per partition, lineage from a Gold batch to files and Kafka ranges. Sandbox pipelines on synthetic data whose rows carry their own file name and row number (ground truth), including a job running two queries.
+**Step 0: Setup and acceptance queries.** Write the v1 questions as acceptance queries: staleness per process, delay decomposition for one file, missing-file detection, Kafka continuity per partition, lineage from a Gold batch to files and Kafka ranges. Sandbox pipelines on synthetic data whose rows carry their own file name and row number (ground truth), including a job running two queries.
 
 **Step 1: Identity (H1).** Log `StreamingQuery.id` in `main` after `start()` and the local-property id in the first batch (must be equal; keep this log to re-check after runtime upgrades). Log the query id and `batchId` in every batch of the two-query job; restart; reset one checkpoint. Pass: ids distinct per query, stable across restart, new after reset.
 
@@ -366,7 +366,7 @@ Gold 52 traces back to `qS/377` → `qB/4812` (files `a_1010`, `b_1010`) and `qK
 
 **Step 5: Failure and replay.** Kill mid-batch at different points; confirm one row per object per unit and that the guardrail checks behave.
 
-**Step 6: Gold aggregation and acceptance queries (H7, H10, H11).** Build the gold tables (`batch_facts`, `lineage_edges`, `process_status`, `daily_rollup`), a hand-filled process dimension and CHECK constraints; run the acceptance queries; compare the lineage walk with ground truth.
+**Step 6: Gold aggregation and acceptance queries (H7, H10).** Build `batch_facts` (with `upstream_units`) and the views, a hand-filled process dimension and CHECK constraints; run the acceptance queries; compare the lineage walk with ground truth.
 
 **Step 7: Migration checks (H8, H9).** Run a stream on legacy data without `_query_id`; run dual reporting and reconcile against `processed_files`.
 
@@ -394,6 +394,7 @@ Gold 52 traces back to `qS/377` → `qB/4812` (files `a_1010`, `b_1010`) and `qK
 - What does the legacy 65 GB consist of (live data, unvacuumed old versions, small-file overhead)?
 - How does the archiving job read the telemetry table (incremental stream or date ranges)? It is a heavy reader, so it affects layout.
 - Where do Databricks DQM features fit, if at all?
+- If per-partition Kafka lag is needed, where does the partition end offset come from: Spark progress `latestOffset` (partly reverses the listener decision) or broker / Event Hubs metrics outside telemetry?
 
 ---
 
