@@ -15,7 +15,7 @@ topics:
 
 # Designing unified processing telemetry across files, Kafka, and Delta
 
-> **Handoff status (2026-10-19):** The POC uses module-specific builders and one shared raw telemetry writer in Core. Local contract and storage-normalization edits exist, but compilation/regression tests were blocked by unavailable Maven; deployment, replay, identity lifetime and performance remain unverified. The raw grains and telemetry identity are chosen; derived-facts grain and incremental completeness are not settled. Identity edges establish batch ancestry, not exact contributing-file or downstream statistical populations.
+> **Handoff status (2026-10-20):** The chosen model is `batch_telemetry` for raw drill-down, flat `batch_facts` at exactly (`query_id`, `batch_id`) for generic monitoring, and separate `batch_dependencies` for observed batch edges. Means, age bounds and coverage belong in the facts build alongside mergeable sums/counts. Base schemas/results have been inspected; the latest extended SQL and optional platform joins have not been reported executed. Materialization/refresh correctness, replay, identity lifetime and performance remain unverified. Identity edges establish batch ancestry, not exact contributing-file or downstream statistical populations.
 
 ## Problem
 
@@ -48,7 +48,9 @@ Preserved as written at the start; later sections show what was challenged.
 
 ## What I currently think
 
-The useful common envelope is identity, processing timing and input volume, followed by source-specific evidence. A shared row shape and stable keys are not enough: each metric needs a declared grain, statistical population, timestamp meaning and coverage. Local stage statistics, ancestral context, processing cadence and backlog answer different questions. The investigation update below records why I no longer treat them as interchangeable.
+One batch is the grain for generic duration, workload, source-age, cadence and coverage trends; one observed batch dependency is the grain for relationships. Raw telemetry retains plant/file/partition detail. The useful common envelope is identity and processing timing, followed by source-specific input volumes and statistics, not a universal business-row count.
+
+A shared row shape and stable keys are not enough: each metric needs a declared population, timestamp meaning and coverage. Convenient means and bounds should be built once with the facts, while sums/counts remain available for correct weighted rollups. Local stage statistics, ancestral context, processing cadence and backlog still answer different questions.
 
 ---
 
@@ -87,7 +89,7 @@ The useful common envelope is identity, processing timing and input volume, foll
 - Do not derive identity from the checkpoint location.
 - Do not rely on hand-written job names for identity.
 - No `output_id`, `status`, or generated keys without a concrete need.
-- One table, one writer.
+- One raw telemetry table, one shared writer; derived facts and dependencies do not automatically require more physical tables.
 - Capture now what cannot be recovered later (e.g. file size); compute the rest downstream.
 - Prefer explicit, type-specific columns over generic columns that mix different semantics.
 - `sql.streaming.queryId` is an internal Spark key, not a public API: a runtime upgrade could rename or drop it (fails loudly through the `require`).
@@ -130,6 +132,24 @@ For an **identical population retained exactly once**, mean age at consumer end 
 Likewise, scalar partition percentiles cannot be combined into a downstream p95. Ancestor timestamp bounds describe ancestor populations, not necessarily the exact consumed subset. Shared ancestor populations must be deduplicated across converging paths when summarizing ancestral context; exact downstream statistics instead require evidence at the downstream population.
 
 Coverage must name its denominator: covered identity groups, input rows and valid timestamps are not interchangeable. Missing identity must remain distinguishable from a known reference outside available history.
+
+---
+
+## Investigation update: 2026-10-20
+
+### What is decided versus observed
+
+**User decisions:** `batch_facts` is exactly one flat row per (`query_id`, `batch_id`), not a primary source/plant-grain fact. `batch_dependencies` holds observed batch relationships separately. The proposed `input_scopes ARRAY<STRUCT<source_type,source_id,plant>>` is rejected: membership does not attribute batch-wide metrics to each plant, and exploding it duplicates those metrics. Raw telemetry remains the drill-down; source summaries are future options only if an actual question requires them.
+
+**Observed evidence:** schema layouts for raw telemetry, facts and dependencies were provided, and earlier base-facts schemas/results were returned. This supports the shape of the base aggregation, not proof of whole-batch formation, refresh correctness or end-to-end lineage. The raw layout includes partition Kafka age metrics and clustering on `job_name`, `batch_date`; no evidence resolves the Scala input `Option[String]` versus persisted BIGINT upstream batch id.
+
+**Latest refinement, not an executed result:** a staged SQL proposal (`prepared` → `aggregated` → `batch_values` → `derived` → `final`) adds ready-to-use means, age bounds, coverage and completion-age columns during the facts build. This supersedes the lean-base-only proposal that left all means to presentation views. An envelope struct is only an intermediate convenience; final facts stay flat. The latest extended SQL has not been reported run.
+
+### What the grain decision protects
+
+A scalar `source_type` in facts requires one source **type** per batch, not necessarily one source id. Selecting an envelope with `any_value` does not validate this or consistency of execution metadata/timing; those invariants need explicit checks. Batch-level duration and workload must not be repeated and then summed through plant membership, dependency fanout or run-context joins.
+
+Ready-to-use metrics and sufficient statistics are complementary. Monitoring should not repeatedly reconstruct each batch's means, but weighted trends must still use the matching sums and counts. The same principle applies to optional platform enrichment: prepare it at a safe join grain rather than multiply batch rows.
 
 ---
 
@@ -209,7 +229,7 @@ Scope: current module inspection found no streaming stateful operators. That bou
 - Kafka modules compute counts from message rows, not offset spans (offsets can have gaps).
 - If `maxFilesPerTrigger` splits an upstream batch's output, it appears in two downstream batches with partial row counts.
 
-### Current raw contract (local POC; storage migration not verified)
+### `batch_telemetry`: current raw contract (provided schema; migration not verified)
 
 ```text
 -- consuming stream
@@ -226,7 +246,7 @@ batch_start_ts        Timestamp  not null
 batch_end_ts          Timestamp  not null
 batch_date            Date       derived explicitly from batch_end_ts in UTC
 input_unit_row_count  Long       not null   input rows for this unit/scope
-source_type           String     not null   file | kafka | delta
+source_type           String     not null   FILE | KAFKA | DELTA
 source_id             String     not null   folder root | topic | table
 
 -- files
@@ -249,12 +269,14 @@ upstream_query_id     String     nullable
 upstream_batch_id     Long       nullable   persisted; input remains Option[String]
 ```
 
-Optional approximate Kafka p50/p95 metrics are described below without asserting an unverified physical type here. The input/persisted `upstream_batch_id` type mismatch remains R1. The explicit writer cast addresses storage normalization, not proof that every input conversion and existing table schema is correct.
+The provided raw layout also includes optional approximate partition metrics `kafka_age_at_batch_start_p50_seconds` and `kafka_age_at_batch_start_p95_seconds`; they are not batch percentiles. The input/persisted `upstream_batch_id` type mismatch remains R1. The explicit writer cast addresses storage normalization, not proof that every input conversion and existing table schema is correct.
 
-Date decision and proposed physical layout:
+The upstream query-id comment still permits a legacy technical job name. A non-null string is not enough for a join: it must equal producer `query_id` or have an authoritative mapping. No new module data-write idempotency migration was chosen.
+
+Date decision and current layout direction:
 
 - `batch_date` is a real `DATE`, explicitly derived from `batch_end_ts` in UTC by the writer. It is **not** implemented as a generated column.
-- Liquid clustering on (`batch_date`, `job_name`) plus predictive optimization. `job_name` because people filter by it and `job_id` does not survive job recreation; a rename only affects the label.
+- The provided raw layout clusters on (`job_name`, `batch_date`); predictive optimization remains the maintenance direction. `job_name` because people filter by it and `job_id` does not survive job recreation; a rename only affects the label. Performance at production commit rates remains unverified.
 - Reasoning: the table is append-only in time order, so files are already roughly time-ordered and min/max statistics skip on time without partitions; identity is the interleaved dimension that clustering fixes. Clustering keys can change later without a rewrite.
 - Volume: file rows ≈ legacy `processed_files` rows (the sizing baseline). Kafka is one row per batch × partition, which is not automatically the smaller grain: a high-partition topic with frequent triggers can produce more rows per day than a file source.
 - Watch items: predictive optimization only runs on Unity Catalog managed tables; clustering is applied mostly during OPTIMIZE, so the newest data is unclustered until compaction. Appends from many writers do not conflict with OPTIMIZE.
@@ -264,8 +286,8 @@ Date decision and proposed physical layout:
 - **Sparse nulls are intended.** Prefer explicit type-prefixed raw columns over structs. Integrity checks are proposed, not established deployment behavior; for example:
 
 ```sql
-ALTER TABLE telemetry ADD CONSTRAINT file_shape CHECK (
-  source_type <> 'file' OR
+ALTER TABLE batch_telemetry ADD CONSTRAINT file_shape CHECK (
+  source_type <> 'FILE' OR
   (file_path IS NOT NULL AND kafka_partition IS NULL AND upstream_batch_id IS NULL));
 ```
 
@@ -285,6 +307,7 @@ ALTER TABLE telemetry ADD CONSTRAINT file_shape CHECK (
 | R7 | Kafka timestamp type (create vs log-append) not stored; keep it in the source dimension so waits can be interpreted | Open |
 | R8 | Candidate `kafka_bytes` (sum of message sizes), the Kafka equivalent of file size | Candidate |
 | R9 | `task_name` is in the current contract; verify whether it supplies the required stable task grouping rather than assuming `task_run_id` does | Verification open |
+| R10 | An upstream identity may still contain a legacy technical job name; require producer-key equality or an authoritative mapping | Joinability not established by non-null values |
 
 ### Column rationale
 
@@ -301,24 +324,105 @@ Optional approximate `kafka_age_at_batch_start_p50_seconds` / `kafka_age_at_batc
 
 ### Derived objects
 
-**Start with views, not a new family of physical tables.** One row per (`query_id`, `batch_id`) remains a viable starting point for `batch_facts`, with nested source/plant summaries if needed. A flat source-level facts grain was also proposed, not decided. Either must preserve source/plant detail and expose the common processing envelope: identities, timing/duration, input volume, then source-specific summaries. Duration is not additive across source-level rows that repeat the same batch.
-
-Source-specific structs can be convenient in derived facts without changing the explicit columns in raw telemetry. Keep locally observed batch facts distinct from dynamically resolved ancestry and monitoring policies.
+**Chosen grains, not a mandate for new physical tables.** Inputs feed `batch_telemetry`, from which `batch_facts` and `batch_dependencies` support job/pipeline monitoring, dashboards and alerts. Optional prepared platform views enrich context without changing the batch grain. Locally observed facts, dynamically resolved ancestry and monitoring policies remain distinct.
 
 | Object | What it is | When it becomes a table |
 |---|---|---|
 | `batch_telemetry` | raw table, one row per object read | already is |
-| `batch_facts` | candidate batch-grain view: ids, layer, start/end, duration, input counts/bytes/objects, source/plant summaries and upstream-unit references | if measured query cost or history requirements justify materialization; grain still open |
-| Lineage edges / enriched facts | views resolving immediate identities and ancestral context; coverage remains explicit | if measured lookup cost or retained history requires it |
+| `batch_facts` | exactly one flat row per (`query_id`, `batch_id`): metadata, scalar source type, duration, source-specific volumes, sufficient statistics and ready-to-use age/coverage metrics | only if query cost/history needs justify it and refresh correctness is established |
+| `batch_dependencies` | observed producer-batch → consumer-batch edges per consumed Delta table, with consumed-row counts | only if lookup cost or retained history requires it |
+| Enriched facts / ancestry | views joining dependencies to facts while exposing identity/resolution coverage | if measured lookup cost or retained history requires it |
 | Process status | view: expected processes/sources left-joined to latest completion and data-age observations | if the history of evaluated states is needed ("how long was it stale") |
-| Daily trends | view: `GROUP BY` process, source, day over `batch_facts` | if dashboards over months of percentiles get slow |
+| Daily trends | view over batch facts grouped by logical process/time with population-weighted age metrics | if measured dashboard cost requires it |
 | Kafka continuity | view over the raw Kafka rows (already one row per batch × partition; a topic-level aggregate would hide a stuck partition) | probably never |
+
+### `batch_facts`: flat batch metrics with sufficient statistics
+
+**Decision:** group exactly by (`query_id`, `batch_id`). Plant, source id, file and partition remain in raw drill-down, not primary facts dimensions. There is no chosen `input_scopes` array, nested source summary or `upstream_units` array in facts. An optional raw-membership `EXISTS` lookup can select batches touching one source, but their facts still describe the whole batch, not that source's attributed share.
+
+The facts envelope carries execution ids/names, layer, query/batch ids, start/end, UTC batch date and scalar `source_type`. One batch may read several source ids of the same type. Validate one source type and consistent envelope values per batch before choosing one representative; `any_value` is not an invariant check. An intermediate SQL envelope struct is flattened in the final output.
+
+The provided/returned **base shape** contains:
+
+| Population | Base fields / sufficient statistics | Interpretation |
+|---|---|---|
+| Batch | execution metadata, `source_type`, `processing_duration_seconds` | duration is one batch fact, not additive through input/edge subdivisions |
+| FILE workload | `file_count`, `known_size_count`, `total_known_bytes`, `largest_bytes` | one binary input row is one file; known bytes are not complete bytes when sizes are missing |
+| FILE modification and functional timestamps, separately | timestamp counts and start-age sum/min/max for each timestamp kind | each family has its own valid-timestamp population |
+| KAFKA | `input_message_count`, `timestamp_count`, `age_at_start_sum_seconds`, `min_ts`, `max_ts` | message volume and valid timestamp coverage are different counts |
+| DELTA | `input_row_count`, `rows_with_complete_upstream_identity` | input rows, with a separate count for complete producer identity |
+
+These file/message/Delta counts are distinct units. There is no universal business-row total to compare across layers.
+
+**Chosen build behavior; latest extended SQL execution unconfirmed:** prepare source evidence, aggregate at batch grain, flatten envelope values, derive metrics, then produce final completion ages (`prepared` → `aggregated` → `batch_values` → `derived` → `final`). Calculate the following during the facts build rather than in every monitor, keeping the base statistics alongside them:
+
+| Metric family | Build-time derivation |
+|---|---|
+| FILE modification / functional `age_at_start_mean_seconds` | corresponding start-age sum divided by `NULLIF(valid timestamp count, 0)` |
+| FILE timestamp coverage, separately for both timestamp kinds | valid timestamp count divided by `NULLIF(file_count, 0)` |
+| KAFKA mean age at start | age sum divided by `NULLIF(timestamp_count, 0)` |
+| KAFKA minimum / maximum age at start | batch start minus `max_ts` (newest) / batch start minus `min_ts` (oldest), in seconds |
+| KAFKA timestamp coverage | timestamp count divided by `NULLIF(input_message_count, 0)` |
+| DELTA identity coverage | complete-identity rows divided by `NULLIF(input_row_count, 0)` |
+| FILE modification / functional and KAFKA `age_at_completion_min/max/mean_seconds` | each matching start-age statistic plus `processing_duration_seconds` |
+
+Use fractional division, preserve negative ages and leave zero-denominator or unknown metrics null. Do not turn missing sizes, timestamps or identities into successful complete coverage. The completion transformation is valid for the same local input population; it does not establish the timestamp distribution of filtered output rows.
+
+For weighted trends, use `SUM(age_at_start_sum_seconds) / NULLIF(SUM(timestamp_count), 0)`, not `AVG(batch_mean)`. For completion-age mean, use numerator `SUM(age_at_start_sum_seconds + timestamp_count * processing_duration_seconds)` divided by the same total valid timestamp count, with a zero-denominator guard. A positive timestamp count with a missing age sum is an integrity failure to expose, not a count to retain while SQL silently drops the numerator. These population checks apply before both batch aggregation and cross-batch rollups.
+
+Kafka scalar partition percentiles cannot produce batch or downstream p95. Raw file timestamps could support file percentiles if a concrete need arises; they are not selected mandatory facts.
+
+### `batch_dependencies`: observed batch edges
+
+The edge columns are `upstream_query_id`, `upstream_batch_id`, `downstream_query_id`, `downstream_batch_id`, `source_id`, `consumed_row_count`. Here `source_id` specifically means the **consumed Delta table**, not a generic file folder or Kafka topic.
+
+Proposed view query, not evidence of executed refresh correctness:
+
+```sql
+SELECT
+  upstream_query_id,
+  upstream_batch_id,
+  query_id AS downstream_query_id,
+  batch_id AS downstream_batch_id,
+  source_id,
+  SUM(input_unit_row_count) AS consumed_row_count
+FROM batch_telemetry
+WHERE source_type = 'DELTA'
+  AND upstream_query_id IS NOT NULL
+  AND upstream_batch_id IS NOT NULL
+GROUP BY
+  upstream_query_id, upstream_batch_id,
+  query_id, batch_id, source_id;
+```
+
+This merges plant subdivisions of the same edge, assuming raw uniqueness and additive counts at that grain. Keep known references even when producer facts are not available; do not inner-join them away. Missing upstream identity remains visible through facts coverage, not edge rows. FILE/KAFKA batches have no upstream lakehouse batch edge; a DELTA batch without edges is not automatically an external root.
+
+Left-join from dependencies to `batch_facts` **twice**, matching upstream query/batch to producer facts and downstream query/batch to consumer facts. This preserves edges with missing facts on either side. Identity completeness is not resolution coverage: a complete recorded pair can still be historical, unavailable or a legacy name requiring authoritative mapping.
+
+The joined view can calculate downstream start/end minus producer end as stage-timing context. Do not clamp negative differences: output may commit before the producer finishes its whole batch. Recursion supplies ancestry or observed downstream consumption, not predicted backlog or configured topology. Job-to-job relationships alone cannot replace actual batch edges. Deduplicate shared ancestors across fanout/converging paths and do not treat whole ancestor-batch metrics as exact filtered downstream statistics.
+
+### Formation and monitoring context remain conditional
 
 **Incremental completeness is not established.** One atomic telemetry commit does not guarantee that a downstream Delta micro-batch receives the whole logical batch: file admission limits can split the commit's files. A stateless aggregation over each reader micro-batch can therefore produce partial `batch_facts`. Run the commit-split acceptance experiment before choosing an aggregation/reconciliation strategy or declaring this correct.
 
 Query-time identity resolution lets a known reference resolve on a later evaluation when retained upstream telemetry arrives. It does not make missing stamps, truncated history or partial local facts complete; unresolved coverage must remain visible.
 
-**Process dimension:** `job_id` (+ `source_id`) → logical process, owner, expected cadence/deadline, tables written (needed for terminal tables). Business can own expectations; engineering owns collection.
+**Process dimension:** logical job/task continuity, owner, expected cadence/deadline and tables written (needed for terminal tables) must survive query-id changes. `job_id` plus a suitable task/process discriminator is the starting point; source-level expectations can use raw drill-down. Business can own expectations; engineering owns collection.
+
+### Optional platform enrichment, prepared before joining
+
+Public documentation checked: [jobs system tables](https://docs.databricks.com/aws/en/admin/system-tables/jobs) and [billable usage](https://docs.databricks.com/aws/en/admin/system-tables/billing). These are possible context sources, not evidence that the joins have executed:
+
+| Source | Join / preparation |
+|---|---|
+| `system.lakeflow.jobs` | match `job_id`; select the latest or appropriate as-of SCD2 version instead of joining all history |
+| `system.lakeflow.job_run_timeline` | facts `job_id` = timeline `job_id`, facts `job_run_id` = timeline `run_id`; collapse timeline slices to run context first |
+| `system.lakeflow.job_task_run_timeline` | match `job_id`, `job_run_id`, plus facts `task_run_id` = task timeline `run_id`; prepare task-run outcome and `compute_ids` without multiplying batches |
+| `system.billing.usage` | match `usage_metadata.job_id` / `job_run_id` where populated; handle billing corrections and prepare usage per run, unit and SKU before joining |
+
+Filter system data to the **current workspace first**: job ids are workspace-scoped. This single-workspace design does not require adding `workspace_id` to raw telemetry. Collapse timeline slices and select SCD2 versions before joins; retain usage-unit/SKU distinctions rather than summing incompatible usage. Validate that each batch-preserving enrichment retains one row per batch.
+
+System records can arrive late and are not a live heartbeat. Run usage repeated on every batch is run context, not additive per-batch cost. Cost needs pricing and an explicit allocation rule; a join does not provide either.
 
 ### Freshness
 
@@ -327,11 +431,13 @@ Query-time identity resolution lets a known reference resolve on a later evaluat
 
 Alert against the expected cadence/deadline from the dimension: the business condition, not a crashing monitoring job. Evaluate "age now" and thresholds at query time, starting from expected processes/sources left-joined to observations. "Late arrival" needs an expectation; observed timestamps alone cannot say late. Historical completion-gap queries must include the preceding observation across the lookback boundary.
 
+By the chosen design, batch start/completion means, bounds and coverage belong in `batch_facts`; the current clock and monitoring policies do not. Use local facts for generic trends, dependency-enriched facts for stage timing/ancestral context, and raw rows for plant/file/partition detail.
+
 Caveat: staleness alone cannot tell "pipeline stuck" from "no new input" (a stateless stream with no new data runs no batches, so a low-volume source looks stale overnight). A sharper condition from telemetry alone: downstream is stale **and** upstream has a batch that ended after the latest upstream batch downstream consumed. It can still fire falsely when upstream's newest batches wrote zero rows to the table (same limit as above).
 
 ### Lineage
 
-Walk from a Gold batch: Gold rows (`upstream_*` = Silver unit) → Silver's rows (`upstream_*` = Bronze unit; one branch per `source_id` when Silver reads several tables) → Bronze rows (files / Kafka ranges). A Bronze lookup can identify that producer population's messages, not automatically the exact downstream subset.
+Walk `batch_dependencies` from a Gold batch to Silver and then Bronze batch keys, joining facts for context and raw rows for terminal file/Kafka detail. Different consumed Delta tables remain separate edges via `source_id`. A Bronze lookup can identify that producer population's messages, not automatically the exact downstream subset.
 
 - With valid stamps, identifies immediate producer-batch dependencies and their ancestral objects (batch-level lineage). It does not establish exact contributing files or messages for a selected downstream output.
 - File path + row index from `_metadata` is a physical record address, not automatic provenance across transformations.
@@ -346,6 +452,8 @@ Walk from a Gold batch: Gold rows (`upstream_*` = Silver unit) → Silver's rows
 - **Id mix-up check:** unexpected overlapping windows or keys shared by different streams should trigger investigation. Attempt/replay timestamps also need examination before diagnosing an id mix-up.
 - **Kafka continuity check:** investigate per-partition discontinuities without treating each offset gap as data loss.
 - **CHECK constraints** per source type.
+- **Batch invariants:** verify raw/facts/edge uniqueness, one scalar source type and consistent execution/timing envelope per batch. `any_value` is selection, not validation.
+- **Population checks:** validate matching Kafka age sum/count populations and count bounds before reporting means/coverage. Missing sums with positive counts must not dilute weighted metrics.
 - **Stateless check:** propose checking that progress reports no state operators (`stateOperators` empty); module inspection is not runtime enforcement.
 - **Identity captured once:** read query id on the batch thread and pass it as a value; reused pool threads can retain another query's local properties. Verify stamps against producer telemetry.
 - **One idempotent write per (table, batch):** a second write to the same table with the same `txnAppId`/`txnVersion` is skipped silently. If ever needed: union first, or use a fixed write-site suffix on the app id.
@@ -390,8 +498,11 @@ In this synthetic example, Gold 52 has ancestral context `qS/377` → `qB/4812` 
 | Kafka one row per message | Per-message detail | Duplicates Bronze at data volume | Rejected |
 | Partitioning by `job_name` × `process_date` (+ `layer`) | Partition pruning on identity and time, the main query pattern | Tiny partitions (a table this size needs no partitioning) and a small file per batch per job partition; `layer` has 3 skewed values. Lineage would need cross-day partition reads anyway | Rejected; date-only partitioning remains possible for cheap retention |
 | Multiple physical gold tables (`batch_facts`, `lineage_edges`, `process_status`, `daily_rollup`, plus `kafka_partition_facts`) | One table per kind of question | No measured need yet; query-time views can resolve later-arriving ancestry without persisting edges. This does not solve incomplete raw coverage or incremental batch splitting | Set aside; materialize a view only when evidence demands it |
+| Primary source/plant-grain facts or `input_scopes ARRAY<STRUCT<source_type,source_id,plant>>` in facts | Preserve source/plant membership with batch metrics | Membership cannot attribute batch-wide metrics; exploding scopes duplicates duration/workload. Raw telemetry supplies drill-down | Rejected; primary facts remain exactly one row per batch |
+| `upstream_units` array in `batch_facts` | Keep dependencies inside the batch row | The selected relationship grain belongs in separate `batch_dependencies` | Superseded |
+| Lean base facts with all means/coverage calculated in presentation views | Keep only mergeable sufficient statistics in facts | Repeats calculations in every monitor; ready-to-use batch metrics can coexist with sums/counts | Superseded by build-time means, bounds, coverage and completion ages |
 | Reading checkpoint `metadata` for query id | Simple source of query id | Violates constraint | Rejected |
-| Generic columns / struct per type / table per type in raw telemetry | Avoid sparse nulls | Mixed semantics / clumsier SQL / UNION everywhere | Rejected for raw; source-specific structs remain possible in derived facts |
+| Generic columns / struct per type / table per type in raw telemetry | Avoid sparse nulls | Mixed semantics / clumsier SQL / UNION everywhere | Rejected for raw; final facts are flat too, with an envelope struct only as a SQL intermediate |
 
 ---
 
@@ -404,7 +515,7 @@ In this synthetic example, Gold 52 has ancestral context `qS/377` → `qB/4812` 
 | H3 | Telemetry append with the same `txnAppId`/`txnVersion` cannot duplicate on replay | 2 |
 | H4 | Stamping and per-batch aggregations add acceptable overhead | 3 |
 | H5 | Recorded upstream units are complete (every input row stamped; split upstream batches appear in both readers) | 3 |
-| H6 | Multi-source streams and multi-output jobs are handled by `source_id` tagging and stamping | 4 |
+| H6 | Multi-source-id streams of one source type and multi-output jobs preserve input identity; mixed source types are detected rather than collapsed into a scalar fact | 4 |
 | H7 | The lineage walk returns correctly bounded batch ancestry with explicit coverage, without claiming exact contributing files or downstream subset statistics | 6 |
 | H8 | The legacy fallback (source + batch id + timing) is a useful qualified heuristic; ambiguity can be detected rather than presented as exact lineage | 7 |
 | H9 | New file rows match legacy `processed_files` during dual reporting | 7 |
@@ -412,6 +523,7 @@ In this synthetic example, Gold 52 has ancestral context `qS/377` → `qB/4812` 
 | H11 | Counts/sums yield the expected Kafka mean and coverage with null/future timestamps; optional percentile cost is acceptable | 3 |
 | H12 | Derived facts stay complete when file admission limits split one telemetry commit across reader micro-batches | 6 |
 | H13 | Decimal/null values and upstream batch ids round-trip through normalization and the migrated table schema | 3, 7 |
+| H14 | Envelope/source-type invariants, uniqueness and population checks preserve one correct facts row per batch and additive dependency counts | 3, 6 |
 
 ---
 
@@ -423,13 +535,13 @@ In this synthetic example, Gold 52 has ancestral context `qS/377` → `qB/4812` 
 
 **Step 2: Idempotency (H2, H3).** Use query id / batch id for telemetry only; retain the modules' existing data-write transaction identifiers. Kill after data write but before telemetry/checkpoint completion and between two data writes; restart and check both data behavior and telemetry deduplication. Reset a checkpoint and record behavior explicitly; do not turn this experiment into an unapproved data-write migration.
 
-**Step 3: Stamp, populations and storage (H4, H5, H11, H13).** Compare module builders plus the Core writer with ground truth. Test one input row per binary file versus parsed rows per file; Kafka count/sum and optional approximate percentiles with uneven partitions, null and future timestamps; grouped Delta input rows; Decimal/null and upstream-id round-trip. Measure overhead with optional metrics enabled/disabled, not just the base writer.
+**Step 3: Stamp, populations and storage (H4, H5, H11, H13, H14).** Compare module builders plus the Core writer with ground truth. Test one input row per binary file versus parsed rows per file; missing file sizes/timestamps; Kafka count/sum and optional approximate percentiles with uneven partitions, null and future timestamps; grouped Delta input rows; Decimal/null and upstream-id round-trip. Check zero denominators and missing sums with positive counts. Measure overhead with optional metrics enabled/disabled, not just the base writer.
 
-**Step 4: Multi-source and multi-output (H6).** A Silver job joining two Bronze tables; a job writing two output tables. Verify actual stamp equality with producer telemetry, source/plant preservation and the limits of per-target attribution.
+**Step 4: Multi-source and multi-output (H6).** A Silver job joining two Bronze tables; a job writing two output tables. Verify actual stamp equality with producer telemetry, raw source/plant preservation and the limits of per-target attribution. Test one source type across several source ids and explicit detection of a mixed-type batch.
 
 **Step 5: Failure and replay.** Kill mid-batch at different points; confirm one row per object per unit and that the guardrail checks behave.
 
-**Step 6: Facts and ancestry acceptance (H7, H10, H12).** Prototype the batch-grain view and compare a flat source-level alternative without declaring the grain settled. Use a hand-filled expected-process/source dimension and proposed checks. Test an unchanged population versus a filtered subset, duplicated/joined/mixed inputs, one producer split across consumers, and converging paths sharing an ancestor. Compare ancestry and downstream statistics with ground truth, explicitly demonstrating what cannot be attributed. Split a single telemetry commit across Delta reader micro-batches; choose reconciliation/aggregation only after observing completeness.
+**Step 6: Facts and ancestry acceptance (H7, H10, H12, H14).** Execute the proposed extended facts build at the settled (`query_id`, `batch_id`) grain; check one flat row per batch, envelope invariants, age-at-start/completion metrics, coverage and weighted rollups. Test dependencies merging plant subdivisions while preserving known but unresolved references; left-join both producer and consumer facts. Use a hand-filled expected-process/source dimension. Test an unchanged population versus a filtered subset, duplicated/joined/mixed inputs, one producer split across consumers, and converging paths sharing an ancestor. Compare ancestry and downstream statistics with ground truth, explicitly demonstrating what cannot be attributed. Split one telemetry commit across Delta reader micro-batches; choose reconciliation/aggregation only after observing completeness. If platform enrichment is used, prepare SCD2/run/usage context and verify no batch fanout before treating it as usable.
 
 **Step 7: Migration checks (H8, H9, H13).** Separate missing identity from a known producer outside the export/retention window. Run legacy input and dual reporting; reconcile file paths/counts/sizes against `processed_files`. Migrate the existing storage schema and confirm the Decimal/null fix after deployment. Resume compilation/regression tests once Maven is available.
 
@@ -441,11 +553,13 @@ In this synthetic example, Gold 52 has ancestral context `qS/377` → `qB/4812` 
 
 **Made:** one shared raw table/writer; module-specific builders using processing's batch-start clock; consuming-unit input counts; grains (file / Kafka topic-partition / upstream unit within declared scope); offset-level Kafka detail from Bronze; query id from the SparkContext local property; query/batch id for telemetry idempotency only; no universal module data-write transaction-id change; explicit type-prefixed raw columns; nullable platform ids and retained source/plant detail; explicit UTC `DATE` from batch end, not a generated column. Legacy reporting remains optional with dual reporting during migration. These are design/local-code decisions, not completed runtime acceptance.
 
-**Refined:** persisted `upstream_batch_id` is Long, but the input type is still `Option[String]` (R1). Delta completion context is observable; pending units/queue wait are not established. Batch ancestry does not imply exact contributing objects or downstream statistical populations. Lineage edges, enriched facts, status and trends start as views.
+**Settled on 2026-10-20:** `batch_telemetry` is raw; `batch_facts` is exactly one flat row per (`query_id`, `batch_id`) with scalar source type; `batch_dependencies` carries batch edges per consumed Delta table. No primary source/plant grain, scope array or upstream-unit array in facts. Build means, age bounds, coverage and completion ages into facts alongside sums/counts. Raw supplies detailed drill-down. Derived objects start as views; the chosen grain does not prove materialization/refresh correctness.
+
+**Refined:** persisted `upstream_batch_id` is Long, but the input type is still `Option[String]` (R1). Complete identity must also be joinable to producer keys or authoritatively mapped from a legacy name. Delta completion context is observable; pending units/queue wait are not established. Batch ancestry does not imply exact contributing objects or downstream statistical populations.
 
 **Leaning:** job identity (`job_id`, `job_run_id`, `task_run_id`, `job_name`, `task_name`) from Databricks dynamic value references passed as JAR task parameters (`{{job.id}}`, `{{job.run_id}}`, `{{task.run_id}}`, `{{job.name}}`, `{{task.name}}`), parsed once in `main`; local properties as fallback for the ids; null when absent. Verification would address R5 and R9. Proposed guards: a deploy-time parameter check, a runtime warning on Databricks without them, and monitoring for null `job_id`. Not yet tested: overridden JAR parameters, repair runs / task retries, and run id vs task run id on a multi-task job.
 
-**Pending:** unresolved schema review items and acceptance of local changes; physical layout/retention, table name/ownership and rollout order; `batch_facts` grain and commit-split completeness; storage migration/deployed verification; identity lifetime, replay/concurrent-query behavior and metric cost. A universal data-write `txnAppId` switch is not pending rollout scope.
+**Pending:** unresolved schema review items and acceptance of local changes; layout performance, retention, ownership and rollout order; execution of extended facts SQL, envelope/population/uniqueness checks and commit-split completeness; storage migration/deployed verification; identity lifetime, replay/concurrent-query behavior, historical lineage resolution and optional metric cost. Optional system-table joins have no execution evidence and are context proposals, not live heartbeat or allocated batch cost. A universal data-write `txnAppId` switch is not pending rollout scope.
 
 ## Open questions
 
@@ -461,23 +575,31 @@ In this synthetic example, Gold 52 has ancestral context `qS/377` → `qB/4812` 
 - Where do Databricks DQM features fit, if at all?
 - If per-partition Kafka lag is needed, where does the partition end offset come from: Spark progress `latestOffset` (partly reverses the listener decision) or broker / Event Hubs metrics outside telemetry?
 - What evidence identifies the exact downstream population when ancestry is insufficient, and how will each coverage denominator be exposed?
-- Which derived-facts grain preserves source/plant detail without repeated batch durations being summed, and how will split telemetry commits be reconciled?
+- How will complete batch formation and refresh be reconciled when Delta reader micro-batches split telemetry commits?
+- What will enforce envelope/scalar-source-type consistency, unique facts/edges and matching Kafka age sums/counts before metrics are published?
+- Can legacy upstream names be mapped authoritatively to producer query ids, and how much history is required to resolve known references?
+- If platform enrichment proves useful, what as-of/run-slice preparation and pricing/allocation rules preserve batch grain and honest cost attribution?
 
 ---
 
-## Conclusion (provisional, 2026-10-19)
+## Conclusion (provisional, 2026-10-20)
 
-The POC supports a coherent direction for shared raw telemetry, but not a verified end-to-end monitoring or lineage solution. Builder/count and Decimal observations exposed concrete contract problems; the local fixes still need compilation, storage migration and deployed acceptance. The inspected exports establish limited local evidence, not a complete Bronze-to-Gold traversal.
+The model is now settled at three complementary grains: raw input evidence, one flat fact per batch, and observed batch dependency edges. Generic monitoring does not need primary plant/source-grain facts or membership arrays. It does need ready-to-use means, bounds and coverage, with sufficient statistics retained for weighted trends. Base schemas/results were inspected; the latest extended SQL, platform joins and refresh behavior are not verified execution results.
 
-The stronger conclusion is about reasoning: a schema can unify storage while leaving its metrics semantically incompatible. I need to establish the row grain, counted population, timestamp meaning and evidence coverage before composing ages, asserting lineage or diagnosing backlog. Stable batch keys make dependencies resolvable; they do not supply the missing population evidence.
+The POC is still not a verified end-to-end monitoring or lineage solution. Earlier builder/count and Decimal findings remain relevant; no new evidence closes the compilation, migration, deployment, identity or replay checks. Nor is there a complete measured Bronze-to-Gold traversal. A chosen grain is not proof that a streaming refresh constructs whole batches.
+
+The stronger conclusion remains about reasoning: establish grain, counted population, timestamp meaning and evidence coverage before composing ages, asserting lineage or diagnosing backlog. Stable keys make dependencies resolvable; convenient derived metrics do not supply missing population evidence.
 
 ## What changed in my understanding?
 
 - Identity is several things with different lifetimes (unit, continuity, attempt, label). The hand-written name + date mixed two of them, and as `txnAppId` it is also a correctness risk.
 - Spark's query-id lifetime is the intended basis for identity, unlike per-run `runId`; this internal local-property implementation still needs restart/reset/concurrent-query verification. Propagating it does not require changing every module's write idempotency.
-- Start/end are batch facts, while input counts belong to a consuming-unit population. Repeating a batch count or summing repeated durations changes the answer. Derived-facts grain remains a design question.
+- Start/end are batch facts, while input counts belong to a consuming-unit population. Repeating a batch count or summing repeated durations changes the answer. The previously open facts-grain decision is now one row per batch; detailed source/plant questions stay in raw drill-down.
 - Stamping and recording immediate keys gives batch dependencies without an output list, not exact file/message attribution for every downstream output. Full producer means/bounds and scalar percentiles do not automatically describe a consumed subset.
-- The two-table design was a response to a missing piece of data, not a demonstrated modeling need; data-borne keys support one shared raw table. This does not settle derived-facts grain or materialization.
+- The initial two-table design was a response to a missing piece of data, not a demonstrated raw-storage need; data-borne keys support one raw table. Separate batch facts and dependencies answer genuinely different grains without demanding separate physical tables.
+- An array of source/plant memberships cannot allocate batch-wide metrics. Keeping the final facts flat prevents accidental scope explosion from looking like attributed measurements.
+- Convenient batch means and mergeable sums/counts are not competing designs. Build both, then use population-weighted sums for trends rather than averaging batch means.
+- Joining run timelines, SCD2 jobs or billing slices can multiply correct facts. Prepare context first; repeated run usage is not additive per-batch cost.
 - Working backwards from how the table is used ("what can't be recovered later?") removed most of the machinery.
 - Recent processing can consume old data. Completion cadence, source timestamp age, source lateness and backlog need separate evidence and expectations.
 - One atomic writer commit is not necessarily one complete reader micro-batch. Producer completion also need not precede consumer start; implementation convenience is not a temporal correctness guarantee.
@@ -496,4 +618,4 @@ Potential connections, not evidence that the problem is already solved:
 
 ## Reusable lesson (provisional)
 
-A common row schema and stable identity are insufficient without explicit grain, statistical population, timestamp meaning and evidence coverage. Keep local stage statistics, ancestral context, processing cadence and backlog separate; compose them only where the required evidence survives. Carry identity across hand-offs, but never promote a dependency edge into stronger attribution than it proves.
+Choose batch grain for generic monitoring and edge grain for observed relationships; retain raw detail for drill-down. Ready-to-use metrics can coexist with mergeable sums/counts, but neither removes the need for explicit populations, timestamp meanings and coverage. Keep local statistics, ancestral context, cadence and backlog separate, and never promote a dependency edge into stronger attribution than it proves.
