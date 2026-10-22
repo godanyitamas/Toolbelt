@@ -16,7 +16,7 @@ topics:
 
 # Designing unified processing telemetry across files, message streams, and Delta
 
-> **Handoff status (2026-10-22):** Message sources (Kafka, and Event Hubs read through the Kafka API) now share one `MESSAGE` source type with `message_*` columns and a `message_system` discriminator. Raw message rows keep mergeable sums/counts/min/max (value bytes and timestamp age) plus the captured `timestampType`; means move to the facts build. How to provide message percentiles/medians for monitoring is an open decision between three options (see 2026-10-22 update). The raw table is in test and will be redeployed with the jars, so the rename needs no migration.
+> **Handoff status (2026-10-22):** Message sources (Kafka, and Event Hubs read through the Kafka API) now share one `MESSAGE` source type with `message_*` columns and a `message_system` discriminator. Raw message rows keep mergeable sums/counts/min/max (value bytes and timestamp age) plus the captured `timestampType`; means move to the facts build. Message percentiles/medians: the direction under test is fixed-bucket histograms per partition row (option B), with bounds and version defined as an object in Core; bucket bounds are to be chosen from measured Bronze value-size distributions and alert thresholds before implementation (see 2026-10-22 update). The raw table is in test and will be redeployed with the jars, so the rename needs no migration.
 >
 > **Previous handoff (2026-10-20):** The chosen model is `batch_telemetry` for raw drill-down, flat `batch_facts` at exactly (`query_id`, `batch_id`) for generic monitoring, and separate `batch_dependencies` for observed batch edges. Means, age bounds and coverage belong in the facts build alongside mergeable sums/counts. Base schemas/results have been inspected; the latest extended SQL and optional platform joins have not been reported executed. Materialization/refresh correctness, replay, identity lifetime and performance remain unverified. Identity edges establish batch ancestry, not exact contributing-file or downstream statistical populations.
 
@@ -195,7 +195,7 @@ The user had added min/max/median value length (byte length of the Kafka value).
 
 Runtime constraint: the jobs run on Databricks Runtime 16 LTS. Mergeable KLL sketch SQL functions (`kll_sketch_*`) are documented from 18.0; earlier sketches (HLL) are for distinct counts only.
 
-**Open decision: how to provide message percentiles for monitoring.** Medians/percentiles are needed for monitoring; the user is not yet convinced of a method.
+**Percentile options considered.** Medians/percentiles are needed for monitoring. Three options were compared; option B was chosen as the direction to test (see below).
 
 | Option | Gives | Costs / risks |
 |---|---|---|
@@ -217,6 +217,26 @@ def histogram[T](value: Column, bounds: Seq[T]): Column = {
   array(buckets.map(cond => sum(when(cond, 1L).otherwise(0L))): _*)
 }
 ```
+
+### Direction under test: histograms (option B)
+
+**User decision:** add histograms for message value bytes and age at batch start. Test the idea before adding further structure.
+
+- **Contract:** bounds and version live in a Core object (e.g. `MessageHistograms`: `Version`, `ValueBytesBounds`, `AgeSecondsBounds`). Every raw message row carries `message_hist_version` from the start, so later bounds changes or a lookup table stay unambiguous for older rows. Arrays from different versions are never merged.
+- **No bounds table yet.** Core-built `batch_facts` interpret buckets from the object directly, including per-batch percentiles and threshold shares. Test notebooks may hard-code bounds labeled with their version. **Trigger for a Core-managed lookup table** (`version`, `metric`, `bounds`, written from the object): the first dashboard or non-Core consumer that must interpret buckets, or the first bounds change. With such consumers, a shared SQL entry point (view/function) for window percentiles is preferable to each notebook re-implementing interpolation.
+- **Raw columns (proposed):** `message_age_at_start_hist ARRAY<BIGINT>`, `message_value_bytes_hist ARRAY<BIGINT>`, `message_hist_version INT`; null on FILE/DELTA rows; explicit cast in the writer (the Decimal lesson applies: encoders do not normalize expression types).
+- **Invariants (facts build, not yet CHECK constraints; higher-order functions in Delta CHECK constraints unverified):** histogram total equals `message_timestamp_count` / `message_value_count`; array size equals bounds + 1 for the row's version; one version per merged group.
+- **Reading percentiles:** cumulative counts plus linear interpolation inside the bucket; a percentile landing in the first or last open-ended bucket is only a bound and should be flagged. Share above a threshold is exact when the threshold is a bound, and is often the better alert signal.
+- **Completion-age limit:** within one batch, completion-age percentiles are exactly start-age percentiles plus processing duration. Across batches (daily), the start histogram cannot give completion-age percentiles; that would need a histogram built at batch end, which depends on whether the builder still has the messages at reporting time (open).
+
+**Choosing bounds before implementation (planned, not yet run).** Measure production Bronze value sizes per topic (`octet_length(value)`; Bronze holds decompressed payloads, matching what the reader and telemetry see), limited by date or sampled (`TABLESAMPLE` samples by file, so confirm shape on one full day):
+
+1. Summary per topic: messages, null and empty values, min/max/mean, approximate p01/p50/p90/p95/p99.
+2. Shape on a log2 scale: counts per `FLOOR(LOG2(octet_length(value)))`, with zero lengths separate (log of 0 is undefined). Reveals narrow topics, multiple peaks and tails.
+3. Stability across days, to leave headroom and avoid early version bumps.
+4. Candidate bounds evaluated on the same data: no bucket should hold most of a topic's messages (p50 and p95 must be distinguishable); compare interpolated p50/p95 with exact values for measured error.
+
+One shared bounds set covers all topics; uneven spacing is allowed (finer steps such as quarter-octave, ratio ≈ 1.19, where medians cluster; coarse steps in tails). Age bounds come from alert thresholds first, measured distribution second. Options A and C remain fallbacks if histograms prove insufficient.
 
 ---
 
@@ -336,14 +356,16 @@ message_value_count                         Long           nullable   non-null v
 message_value_bytes_sum                     Long           nullable
 message_value_bytes_min                     Long           nullable
 message_value_bytes_max                     Long           nullable
--- percentile representation: open decision (A repeated batch median | B histograms | C from Bronze)
+message_age_at_start_hist                   Array<Long>    nullable   counts per age bucket (direction under test)
+message_value_bytes_hist                    Array<Long>    nullable   counts per size bucket (direction under test)
+message_hist_version                        Int            nullable   bounds version from the Core object
 
 -- delta
 upstream_query_id     String     nullable
 upstream_batch_id     Long       nullable   persisted; input remains Option[String]
 ```
 
-The earlier layout's partition percentiles (`kafka_age_at_batch_start_p50/p95_seconds`) and the briefly added partition median value length are not combinable and are replaced by the open percentile decision (2026-10-22). The message columns above are the agreed direction for the test redeploy, not an inspected deployed schema; `message_timestamp_type` encoding and the `MIXED` rule are proposals. The input/persisted `upstream_batch_id` type mismatch remains R1. The explicit writer cast addresses storage normalization, not proof that every input conversion and existing table schema is correct.
+The earlier layout's partition percentiles (`kafka_age_at_batch_start_p50/p95_seconds`) and the briefly added partition median value length are not combinable and are replaced by mergeable histograms, the direction under test (2026-10-22). The message columns above are the agreed direction for the test redeploy, not an inspected deployed schema; `message_timestamp_type` encoding and the `MIXED` rule are proposals. The input/persisted `upstream_batch_id` type mismatch remains R1. The explicit writer cast addresses storage normalization, not proof that every input conversion and existing table schema is correct.
 
 The upstream query-id comment still permits a legacy technical job name. A non-null string is not enough for a join: it must equal producer `query_id` or have an authoritative mapping. No new module data-write idempotency migration was chosen.
 
@@ -394,7 +416,7 @@ Rules: Delta = full three-part Unity Catalog name; message = topic / event hub, 
 
 For each topic/partition, age is batch start minus each non-null message timestamp. `message_timestamp_count` and `message_age_at_batch_start_sum_seconds` retain valid coverage and additive age evidence; their batch mean is total sum divided by total valid count when that count is nonzero, not an equal average of partition means. Null timestamps are excluded, coverage is reported against input-message count, and negative ages are retained as evidence of future timestamps or clock/semantic differences. Existing min/max timestamps give the observed population's oldest/newest ages.
 
-Scalar partition percentiles cannot be combined into batch or downstream percentiles; see the open percentile decision. `message_timestamp_type` records create-time versus log-append-time per range; ages of different timestamp types must not be mixed in one mean. Value-size statistics cover non-null values only, with `message_value_count` as their population.
+Scalar partition percentiles cannot be combined into batch or downstream percentiles; histograms per partition row are the mergeable alternative under test. `message_timestamp_type` records create-time versus log-append-time per range; ages of different timestamp types must not be mixed in one mean. Value-size statistics cover non-null values only, with `message_value_count` as their population.
 
 **File columns:** modification time is timestamp evidence, not automatically landing arrival. Size is the workload property that may be unrecoverable once files are removed. Functional timestamps need their own meaning, separate from arrival and completion.
 
@@ -447,7 +469,7 @@ Use fractional division, preserve negative ages and leave zero-denominator or un
 
 For weighted trends, use `SUM(age_at_start_sum_seconds) / NULLIF(SUM(timestamp_count), 0)`, not `AVG(batch_mean)`. For completion-age mean, use numerator `SUM(age_at_start_sum_seconds + timestamp_count * processing_duration_seconds)` divided by the same total valid timestamp count, with a zero-denominator guard. A positive timestamp count with a missing age sum is an integrity failure to expose, not a count to retain while SQL silently drops the numerator. These population checks apply before both batch aggregation and cross-batch rollups.
 
-Message scalar partition percentiles cannot produce batch or downstream p95; the representation is the open decision (A/B/C). File percentiles (size, timestamp ages) are exact from raw rows over any window, because raw is one row per file.
+Message scalar partition percentiles cannot produce batch or downstream p95; merged histograms (option B, under test) provide approximate batch/window percentiles and exact threshold shares. File percentiles (size, timestamp ages) are exact from raw rows over any window, because raw is one row per file.
 
 ### `batch_dependencies`: observed batch edges
 
@@ -530,7 +552,7 @@ Walk `batch_dependencies` from a Gold batch to Silver and then Bronze batch keys
 - **Message continuity check:** investigate per-partition discontinuities without treating each offset gap as data loss.
 - **CHECK constraints** per source type.
 - **Batch invariants:** verify raw/facts/edge uniqueness, one scalar source type and consistent execution/timing envelope per batch. `any_value` is selection, not validation.
-- **Population checks:** validate matching message age sum/count and value bytes/count populations (and histogram totals, if option B) and count bounds before reporting means/coverage. Missing sums with positive counts must not dilute weighted metrics.
+- **Population checks:** validate matching message age sum/count and value bytes/count populations (and histogram totals against their valid counts) and count bounds before reporting means/coverage. Missing sums with positive counts must not dilute weighted metrics.
 - **Stateless check:** propose checking that progress reports no state operators (`stateOperators` empty); module inspection is not runtime enforcement.
 - **Identity captured once:** read query id on the batch thread and pass it as a value; reused pool threads can retain another query's local properties. Verify stamps against producer telemetry.
 - **One idempotent write per (table, batch):** a second write to the same table with the same `txnAppId`/`txnVersion` is skipped silently. If ever needed: union first, or use a fixed write-site suffix on the app id.
@@ -579,8 +601,11 @@ In this synthetic example, Gold 52 has ancestral context `qS/377` → `qB/4812` 
 | `upstream_units` array in `batch_facts` | Keep dependencies inside the batch row | The selected relationship grain belongs in separate `batch_dependencies` | Superseded |
 | Lean base facts with all means/coverage calculated in presentation views | Keep only mergeable sufficient statistics in facts | Repeats calculations in every monitor; ready-to-use batch metrics can coexist with sums/counts | Superseded by build-time means, bounds, coverage and completion ages |
 | Product-named `KAFKA` source type | Original Kafka-only scope | Event Hubs jobs read through the Kafka API share the layout; broker belongs in `message_system`, not the type name or `source_id` | Superseded by `MESSAGE` (2026-10-22) |
-| Partition-level median/percentiles in raw | Monitoring needs medians | Not combinable into batch/day percentiles | Superseded; percentile representation open (A/B/C) |
+| Partition-level median/percentiles in raw | Monitoring needs medians | Not combinable into batch/day percentiles | Superseded by histograms (under test) |
 | KLL sketches in raw (`kll_sketch_*`) | Mergeable approximate quantiles in SQL | Documented from Databricks Runtime 18.0; jobs run 16 LTS. A Scala DataSketches aggregator would need UDFs for merging and unverified format compatibility | Revisit after a runtime upgrade |
+| Repeated batch-level median on each partition row (option A) | Simple per-batch statistic, no bucket contract | Not mergeable across batches/days; grain-mismatch pattern needing guardrails | Fallback if only per-batch percentiles prove necessary |
+| Exact percentiles on demand from Bronze (option C) | Exact, no contract | Bronze retention and scan cost per evaluation (unmeasured) | Fallback / ground truth for histogram error |
+| Bounds lookup table from the start | One bounds source readable by SQL consumers | No non-Core consumer yet; test first | Deferred until a dashboard/non-Core consumer or bounds change needs it |
 | Reading checkpoint `metadata` for query id | Simple source of query id | Violates constraint | Rejected |
 | Generic columns / struct per type / table per type in raw telemetry | Avoid sparse nulls | Mixed semantics / clumsier SQL / UNION everywhere | Rejected for raw; final facts are flat too, with an envelope struct only as a SQL intermediate |
 
@@ -601,7 +626,7 @@ In this synthetic example, Gold 52 has ancestral context `qS/377` → `qB/4812` 
 | H9 | New file rows match legacy `processed_files` during dual reporting | 7 |
 | H10 | Liquid clustering + predictive optimization keep file counts and lookup cost acceptable at production commit rates | 3, 6 |
 | H11 | Counts/sums yield the expected message mean age, value-size mean and coverage with null/future timestamps and null/empty values | 3 |
-| H15 | The chosen percentile option (A/B/C) answers the actual monitoring queries with acceptable error and cost versus exact Bronze percentiles | 3 |
+| H15 | Histograms with bounds chosen from measured Bronze distributions answer the actual monitoring queries with acceptable error (versus exact Bronze percentiles) and acceptable builder overhead | 3 |
 | H16 | `timestampType` returned through the Event Hubs Kafka endpoint reflects the event hub's append/create configuration | 3 |
 | H12 | Derived facts stay complete when file admission limits split one telemetry commit across reader micro-batches | 6 |
 | H13 | Decimal/null values and upstream batch ids round-trip through normalization and the migrated table schema | 3, 7 |
@@ -617,7 +642,7 @@ In this synthetic example, Gold 52 has ancestral context `qS/377` → `qB/4812` 
 
 **Step 2: Idempotency (H2, H3).** Use query id / batch id for telemetry only; retain the modules' existing data-write transaction identifiers. Kill after data write but before telemetry/checkpoint completion and between two data writes; restart and check both data behavior and telemetry deduplication. Reset a checkpoint and record behavior explicitly; do not turn this experiment into an unapproved data-write migration.
 
-**Step 3: Stamp, populations and storage (H4, H5, H11, H13, H14, H15, H16).** Compare module builders plus the Core writer with ground truth. Test one input row per binary file versus parsed rows per file; missing file sizes/timestamps; message count/sum with uneven partitions, null and future timestamps, null and empty values; percentile options A and B against exact Bronze percentiles, and the one-day Bronze scan cost of C; `timestampType` on a test event hub; grouped Delta input rows; Decimal/null and upstream-id round-trip. Check zero denominators and missing sums with positive counts. Measure overhead with optional metrics enabled/disabled, not just the base writer.
+**Step 3: Stamp, populations and storage (H4, H5, H11, H13, H14, H15, H16).** Compare module builders plus the Core writer with ground truth. Test one input row per binary file versus parsed rows per file; missing file sizes/timestamps; message count/sum with uneven partitions, null and future timestamps, null and empty values; bounds chosen from production Bronze measurements; histogram totals, boundary values, negative ages and null/empty values; merged-partition histogram equal to the histogram of the combined messages; histogram p50/p95 against exact Bronze percentiles; version mismatch detected; `timestampType` on a test event hub; grouped Delta input rows; Decimal/null and upstream-id round-trip. Check zero denominators and missing sums with positive counts. Measure overhead with optional metrics enabled/disabled, not just the base writer.
 
 **Step 4: Multi-source and multi-output (H6).** A Silver job joining two Bronze tables; a job writing two output tables. Verify actual stamp equality with producer telemetry, raw source/plant preservation and the limits of per-target attribution. Test one source type across several source ids and explicit detection of a mixed-type batch.
 
@@ -637,7 +662,7 @@ In this synthetic example, Gold 52 has ancestral context `qS/377` → `qB/4812` 
 
 **Settled on 2026-10-20:** `batch_telemetry` is raw; `batch_facts` is exactly one flat row per (`query_id`, `batch_id`) with scalar source type; `batch_dependencies` carries batch edges per consumed Delta table. No primary source/plant grain, scope array or upstream-unit array in facts. Build means, age bounds, coverage and completion ages into facts alongside sums/counts. Raw supplies detailed drill-down. Derived objects start as views; the chosen grain does not prove materialization/refresh correctness.
 
-**Settled on 2026-10-22:** `MESSAGE` source type and `message_*` columns for Kafka and Event Hubs read through the Kafka API, with `message_system` (`KAFKA` | `EVENT_HUBS`); capture `timestampType`; raw keeps mergeable sums/counts/min/max for value bytes and timestamp age, and means are derived in facts. The table is in test and is redeployed with the jars, so no migration is needed. Percentile/median representation for messages remains open (A/B/C).
+**Settled on 2026-10-22:** `MESSAGE` source type and `message_*` columns for Kafka and Event Hubs read through the Kafka API, with `message_system` (`KAFKA` | `EVENT_HUBS`); capture `timestampType`; raw keeps mergeable sums/counts/min/max for value bytes and timestamp age, and means are derived in facts. The table is in test and is redeployed with the jars, so no migration is needed. Message percentiles: histograms (option B) as the direction under test, bounds/version as a Core object, `message_hist_version` on every row, no bounds table until a non-Core consumer or bounds change needs it.
 
 **Refined:** persisted `upstream_batch_id` is Long, but the input type is still `Option[String]` (R1). Complete identity must also be joinable to producer keys or authoritatively mapped from a legacy name. Delta completion context is observable; pending units/queue wait are not established. Batch ancestry does not imply exact contributing objects or downstream statistical populations.
 
@@ -653,8 +678,9 @@ In this synthetic example, Gold 52 has ancestral context `qS/377` → `qB/4812` 
 - What does the functional/filename date mean, and how are file overwrites handled?
 - How will the file inventory be produced for missing-file detection?
 - Which Kafka topics / event hubs use create time vs log-append time? (Now observable through `message_timestamp_type`.)
-- Which monitoring queries need percentiles (value size, timestamp age), and over what window: per batch, per day, per partition? This decides option A vs B/C.
-- Which alert thresholds exist? Under option B they define the age bucket boundaries.
+- Which monitoring queries need percentiles (value size, timestamp age), and over what window: per batch, per day, per partition? This shapes the bounds and whether histograms suffice.
+- Which alert thresholds exist? They define the age bucket boundaries.
+- Does the builder still have the messages at batch end (needed if daily completion-age percentiles require a histogram built from `batch_end_ts`)?
 - Is Bronze retention long enough for the required lineage horizon?
 - What does the legacy 65 GB consist of (live data, unvacuumed old versions, small-file overhead)?
 - How does the archiving job read the telemetry table (incremental stream or date ranges)? It is a heavy reader, so it affects layout.
