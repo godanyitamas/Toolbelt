@@ -28,6 +28,7 @@ Interaction pattern: **my model → AI challenge → investigation → AI review
 ├── inbox.md         # fast capture only; do not polish
 ├── cases/           # core: real problems and investigations
 ├── concepts/        # reusable mental models that emerged from several cases
+├── decisions/       # architectural decisions: why A instead of B
 ├── templates/       # case.md, retrospective-case.md
 └── .ai/workflows/   # stable, repository-specific agent workflows
 ```
@@ -36,7 +37,8 @@ Interaction pattern: **my model → AI challenge → investigation → AI review
 - **Concept:** only when several real cases show a reusable mental model would help. Never because a concept is important in general.
 - **Templates** should reduce friction. If one makes me reluctant to write a case, simplify it.
 - **`.ai/`** holds only stable workflows (what context to load, what reasoning to follow, what evidence standard, what checks before committing). Not a prompt collection.
-- **New structure** (`decisions/`, `labs/`, `playbooks/`, `career/`) is added only when repeated use creates a real need. Their intended purposes are described in `README.md`.
+- **Decisions** (`decisions/`) record a stable choice that emerged from a case (context, constraints, options, decision, why, consequences, what would make me reconsider). The case links to them instead of repeating the full contract.
+- **New structure** (`labs/`, `playbooks/`, `career/`) is added only when repeated use creates a real need. Their intended purposes are described in `README.md`.
 
 ---
 

@@ -92,8 +92,10 @@ Abstract work situations into transferable engineering problems.
 ├── inbox.md
 ├── cases/
 ├── concepts/
+├── decisions/
 └── templates/
     └── case.md
+```
 
 ---
 
