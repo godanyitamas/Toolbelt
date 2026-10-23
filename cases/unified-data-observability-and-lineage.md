@@ -19,10 +19,11 @@ topics:
 > **Handoff (2026-10-23)**
 >
 > - **Settled:** three grains (raw `batch_telemetry`, flat `batch_facts` per batch, `batch_dependencies` edges), Spark/platform identity, one raw table → `decisions/batch-telemetry-model.md`. Message histograms version 1, timestamp type dropped → `decisions/message-histogram-contract-v1.md`.
-> - **Local code (uncommitted, not deployed):** Core constants/schema/writer compile, seven focused tests passed; the adapted Kafka builder's extracted telemetry method passed seven Spark tests. Both still group by timestamp type and need the drop applied plus the `-1` validity filter.
+> - **Local code (uncommitted, not deployed):** Core constants/schema/writer compile, seven focused tests passed; the adapted Kafka builder's extracted telemetry method passed seven Spark tests. The timestamp-type grouping and column are now removed locally (2026-10-23). The `-1` validity filter and the 1969 conversion test are deliberately deferred as low priority; fallback guard proposed below.
 > - **Measured (one production day):** size/age distributions; histogram percentile errors against exact references; completion-age shares. One population exceeds the 2–5 min expectation (see Evidence).
 > - **Not verified:** identity lifetime (H1), replay (H2/H3), deployed round-trip, full module build, facts build, commit-split completeness, lineage traversal, cross-day stability, performance.
-> - **Next:** apply the timestamp-type drop in code; investigate the slow population; second-day histogram comparison; first facts build with histograms; H1 and replay tests.
+> - **Scope clarified (2026-10-23):** engineering delivers metrics; the customer's business side owns alert policy. Monitored families: volume per time window and message age.
+> - **Next:** investigate the slow population; second-day histogram comparison; first facts build with histograms; H1 and replay tests.
 
 ## Problem
 
@@ -169,7 +170,7 @@ Against the 2–5 min expectation, traceability events had a **median completion
 ### Local implementation evidence and its boundary
 
 - **Core (local, uncommitted):** constants, schema and writer compile; seven focused tests passed (published age vector, size formula, version, increasing bounds, nullable schema compatibility).
-- **Adapted Kafka builder (local, not a module commit):** telemetry computed in the module from Core constants; start and post-write end instants captured once and reused for the completion histogram and persistence; the raw batch stays persisted across data and telemetry work. Its extracted telemetry method passed seven Spark tests: bucket boundaries and adjacent values; negative/null/empty/overflow populations; timestamp-type separation (since dropped); counts from messages, not offset spans; threshold counts; partition merge equal to the combined distribution; empty batches; invalid identity/timing failing; projection into the Core schema.
+- **Adapted Kafka builder (local, not a module commit):** telemetry computed in the module from Core constants; start and post-write end instants captured once and reused for the completion histogram and persistence; the raw batch stays persisted across data and telemetry work. Its extracted telemetry method passed seven Spark tests: bucket boundaries and adjacent values; negative/null/empty/overflow populations; timestamp-type separation (since removed from the code; tests not re-run after the removal); counts from messages, not offset spans; threshold counts; partition merge equal to the combined distribution; empty batches; invalid identity/timing failing; projection into the Core schema.
 - **Not established:** full module compilation (configuration classes unavailable), registry branch execution, deployed round-trip, replay, performance.
 
 ---
@@ -231,8 +232,27 @@ Logical key: (`query_id`, `batch_id`, `source_id`) + key object (+ plant scope).
 
 - **Done:** processing duration; timestamp age at start and at completion for the observed population; time since last completion, evaluated separately (recent completions can process old data).
 - **Waiting:** needs a file inventory or broker end offsets; Delta pending units remain unresolved.
-- Alert against expected cadence/deadline from a process dimension, evaluated at query time from expected processes left-joined to observations. Candidate 120/300 s bounds give exact late shares; warning/critical policy is undecided. Observed slowness must not relax the expectation.
+- Alert against expected cadence/deadline from a process dimension, evaluated at query time from expected processes left-joined to observations. Candidate 120/300 s bounds give exact late shares. Observed slowness must not relax the expectation.
 - Staleness alone cannot tell "stuck" from "no new input"; sharper: downstream stale **and** upstream has a newer batch than the latest one consumed (still fooled by zero-row writes).
+
+### Monitoring scope (2026-10-23)
+
+**User decisions:**
+
+- **Responsibility split:** the customer's business side owns alert policy (thresholds, warning/critical, tolerated late shares). Engineering delivers metrics detailed enough to build valuable monitoring on, and establishes trends.
+- **Accepted measurements:** CreateTime as publication time; `batch_end_ts` (post-write) as availability time. The caveats stay: CreateTime is producer-supplied; batch end is a writer-side proxy for target availability.
+- **Expectation ballpark:** roughly 2–5 min from publication to parsed Bronze for Kafka MESSAGE jobs.
+- **Two metric families to trend:**
+  - **Volume per time window** (primary): `SUM(input_message_count)` per hour/day and source. Messages per batch stays a diagnostic only: it depends on trigger cadence and batch size, and a batch catching up on backlog looks like a volume spike although the source did not change. Growing batch sizes can indicate a consumer falling behind.
+  - **Message age:** completion-age shares at the 120/300 s bounds (exact from merged histograms) plus interpolated p50/p95; means from sums.
+- **Granularity undecided** (hourly vs daily).
+
+**Agent proposals, not decided:**
+
+- Histograms and sums merge exactly at any window, so the facts support both granularities; an hourly base with daily rollups is a reasonable default. For a 2–5 min expectation, daily works as a trend, not for reacting. The deciding question for the business side: how fast must someone notice a problem?
+- Trend baselines should account for seasonality (shifts, production schedules): compare with the same hour on previous weeks rather than the previous hour.
+- Zero volume is invisible as rows (no input, no batch); detect it from the expected-process list left-joined to observations, as above.
+- **Fallback for the deferred `-1` filter:** if a batch's `message_min_ts` is implausibly old (e.g. before 2000), the facts build nulls its age metrics and flags it, so one invalid timestamp cannot corrupt means or histograms unnoticed.
 
 ### Lineage limits
 
@@ -308,11 +328,11 @@ Id mix-up check (overlapping windows/keys across streams); per-partition offset 
 | H8 | The legacy fallback is a useful qualified heuristic with detectable ambiguity | 7 | Open |
 | H9 | New file rows match legacy `processed_files` during dual reporting | 7 | Open |
 | H10 | Clustering + predictive optimization keep file counts and lookup cost acceptable | 3, 6 | Open |
-| H11 | Counts/sums give correct message means and coverage with null/future/`-1` timestamps and null/empty values | 3 | Local tests partial; `-1` handling to add |
+| H11 | Counts/sums give correct message means and coverage with null/future/`-1` timestamps and null/empty values | 3 | Local tests partial; `-1` filter deliberately deferred (facts-build fallback proposed) |
 | H12 | Facts stay complete when readers split one telemetry commit | 6 | Open |
 | H13 | Decimal/null values and upstream batch ids round-trip through storage | 3, 7 | Local cast; deployed open |
 | H14 | Envelope invariants, uniqueness and population checks give one correct facts row per batch | 3, 6 | Open |
-| H15 | Version-1 histograms answer monitoring queries with acceptable error and overhead across days | 3 | One day measured; tolerance, stability, performance open |
+| H15 | Version-1 histograms answer monitoring queries with acceptable error and overhead across days | 3 | One day measured; stability, performance open; tolerance follows from the business side's thresholds |
 | H16 | Event Hubs via Kafka endpoint reports its configured timestamp type | 3 | Open; now only relevant to onboarding checks |
 
 **POC steps:** 0 acceptance queries and synthetic ground truth (two-query job, recent process reading old data); 1 identity; 2 idempotency and replay (telemetry only, no data-write migration); 3 stamps, populations, storage, histograms (second day, `-1`, size tail near 1 MB, overhead); 4 multi-source/multi-output; 5 failure and replay; 6 facts and ancestry (histogram merges, commit split, converging paths, unresolved references); 7 migration checks and legacy reconciliation; 8 evaluate and write up.
@@ -324,14 +344,14 @@ Id mix-up check (overlapping windows/keys across streams); per-partition offset 
 **Freshness and expectations**
 
 - Why do traceability events exceed the 2–5 min expectation? Proposed checks on Bronze for one day: compare start age with the interval between batch starts (consumer backlog); check whether CreateTime is non-monotonic in offset order within a partition (producer buffering/clock); compare consumed max offsets with broker end offsets where available.
-- Which other expectations exist, who owns them, which conditions alert through which channel? Is there an Event Hubs expectation?
-- What exactly counts as publication and as parsed-output availability? How do 120/300 s bounds become warning/critical conditions or tolerated late shares?
+- To agree with the business side: how fast must a problem be noticed (sets hourly vs daily), which thresholds and late shares become warning/critical, and through which channel?
+- Which baseline defines a trend (same hour previous weeks, rolling window), and which volume deviation is meaningful?
 - Do expectations describe processing cadence or arrival cadence? What should a support engineer read from the morning email or a dashboard?
 
 **Histograms and timestamps**
 
 - What absolute and relative errors are acceptable for the actual queries? Do version-1 bounds hold on a second day, weekly, for static/small topics and near the 1 MB size tail?
-- Does Spark deliver a `-1` record timestamp as 1969 rather than null? Who runs the per-source timestamp-type onboarding check, and where is the result kept?
+- Does Spark deliver a `-1` record timestamp as 1969 rather than null? (Deferred; low priority while all sources are CreateTime.) Who runs the per-source timestamp-type onboarding check, and where is the result kept?
 - What does keeping the raw batch persisted across writes cost on large batches?
 - How will future consumers resolve old histogram versions and share interpolation logic once a lookup table is needed?
 
@@ -339,15 +359,21 @@ Id mix-up check (overlapping windows/keys across streams); per-partition offset 
 
 - How will whole-batch formation be reconciled when readers split telemetry commits?
 - What will enforce envelope consistency, uniqueness and population checks before metrics are published?
-- Can legacy upstream names be mapped authoritatively to query ids; how much history is needed to resolve known references? Is Bronze retention long enough?
+- How much history is needed to resolve known references? Is Bronze retention long enough?
 - What evidence identifies the exact downstream population when ancestry is insufficient?
 - How does the archiving job read the table? What does the legacy 65 GB consist of?
-- If per-partition lag is needed, where do end offsets come from (Spark progress or broker metrics)?
 
 **Files and platform**
 
-- What does the functional date mean; how are overwrites handled; how is the file inventory produced?
 - Where does Databricks DQM fit, if at all? If platform enrichment is used, what allocation rule makes cost attribution honest?
+
+**Parked (not live in this POC; revisit when a concrete need appears)**
+
+- An Event Hubs-specific freshness expectation.
+- End offsets for per-partition lag (Spark progress vs broker metrics).
+- Authoritative mapping of legacy upstream names to query ids.
+- Meaning of the file functional date and handling of file overwrites.
+- Producing a file inventory for missing-file detection.
 
 ---
 
