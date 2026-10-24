@@ -46,6 +46,8 @@ Interaction pattern: **my model → AI challenge → investigation → AI review
 
 Follow `.ai/workflows/new-case.md` for new cases. Case structure is defined by `templates/case.md` (or `templates/retrospective-case.md` for reconstructions from memory). The two most important sections are **What I currently think** and **What changed in my understanding?**
 
+For trivial edits (typos, links, metadata, inbox capture), skip the challenge workflow.
+
 ### Context loading rule
 
 Do not read the entire repository by default.
@@ -73,6 +75,8 @@ A case is judged by one question: **did it improve how I will reason about a fut
 Agents may **propose** changes to canonical knowledge; they do not silently rewrite established conclusions.
 
 **agent proposes → I inspect → I accept, modify, or reject**
+
+**Surgical edits.** Every changed line should trace to the request. Do not reword, condense, reorder or reformat sections the task did not touch. If you notice an unrelated problem (a contradiction, a stale claim), point it out; do not fix it. Condensing or restructuring a case is a separate task I ask for explicitly.
 
 ---
 

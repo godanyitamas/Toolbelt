@@ -60,6 +60,8 @@ Keep observations separate from explanations.
 
 What explanations currently seem plausible?
 
+Before testing one, note which result would support it and which would refute it.
+
 ### Hypothesis 1
 
 ...

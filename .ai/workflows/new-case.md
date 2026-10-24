@@ -130,6 +130,8 @@ When competing explanations exist, prioritize experiments that distinguish them.
 
 Do not recommend an experiment merely because it is technically interesting. It should answer a meaningful question.
 
+For each experiment, write down before running it which result would support the hypothesis and which would refute it.
+
 ---
 
 ## Phase 6 — Investigate
