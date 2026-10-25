@@ -424,7 +424,7 @@ The stronger conclusion is about reasoning: establish grain, counted population,
 
 Potential connections, not evidence that the problem is already solved:
 
-- `cases/productionizing-a-benchmark-driven-streaming-architecture.md`: control-tower tables as correctness/readiness coordination.
+- `cases/productionizing-a-benchmark-driven-streaming-architecture.md`: file-level progress tables as correctness/readiness coordination.
 - `cases/databricks-cost-intelligence-loop.md`: `job_id`/`job_run_id` in telemetry enable cost per process or run; batch-level cost needs an explicit allocation rule.
 - `cases/databricks-comment-metadata-ownership.md`: business owns freshness expectations; engineering owns the mechanism.
 - `cases/streaming-file-parser-rework.md`: file size vs duration per batch would have surfaced large-file pressure earlier.

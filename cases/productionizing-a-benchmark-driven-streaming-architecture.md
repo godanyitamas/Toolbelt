@@ -30,19 +30,19 @@ The legacy STDF system parsed zipped binary files and produced multiple Silver D
 
 The new design introduced a Medallion-style architecture. The binary files were parsed once into a large Bronze Delta table. Bronze records were organized primarily around record type, with an ingestion_date column added as a consistent temporal access key. A Silver target could generally derive its data from one or two relevant Bronze record-type partitions.
 
-The POC then introduced a Global Silver table and multiple downstream Silver Structured Streaming queries. Each Silver stream used Global records as an entry point and used information such as file name and ingestion date to locate the corresponding records in Bronze.
+The POC then introduced a per-file master table in Silver (one row per file with its main attributes) and multiple downstream Silver Structured Streaming queries. Each Silver stream used the master table as an entry point and used information such as file name and ingestion date to locate the corresponding records in Bronze.
 
 Bronze ingestion was split into three streams by file size: small (0–100 MB), medium (100–200 MB), and large (200 MB–2 GB). Small files represented roughly 97% of the daily file count. The intended benefits of the split included workload-specific tuning, lower latency for small files, resource specialization, and potentially lower cost.
 
 The POC was built by Databricks-focused engineers against an initial end-to-end baseline of roughly 30 minutes. The POC demonstrated about four minutes for the small-file workload. However, that four-minute value was not a production end-to-end metric and was based on a limited test dataset. The POC did not yet contain all of the business logic required to reproduce the legacy outputs exactly.
 
-A particularly important part of the architecture was the use of control-tower Delta tables. The Bronze control tower contains file-level metadata such as batch information, file name, start/end information, and job information, with one row per file. This provides a file-level coordination signal because reading the Bronze data stream alone does not guarantee that all rows belonging to a binary file have arrived.
+A particularly important part of the architecture was the use of file-level progress tables in Delta. The Bronze progress table contains file-level metadata such as batch information, file name, start/end information, and job information, with one row per file. This provides a file-level coordination signal because reading the Bronze data stream alone does not guarantee that all rows belonging to a binary file have arrived.
 
-The Silver layer had an analogous control tower. Each independent Silver stream recorded its completion for a file. An endpoint table, synchro, only received one row for a file after all required Silver processes had written their control-tower records. Synchro therefore acts as the completion contract consumed by downstream Golden processing: when a file appears there, the system treats the required Silver outputs for that file as complete.
+The Silver layer had an analogous progress table. Each independent Silver stream recorded its completion for a file. An endpoint completion table only received one row for a file after all required Silver processes had written their progress records. The completion table therefore acts as the completion contract consumed by downstream Golden processing: when a file appears there, the system treats the required Silver outputs for that file as complete.
 
-The production deployment was two Databricks jobs: one Bronze job and one Silver job with multiple tasks corresponding to the Silver streaming queries. Tasks had automatic retries, but a failure that required code or configuration changes could leave one Silver process unavailable. Other Silver processes could continue, while synchro correctly withheld the file because the full set of acknowledgements had not arrived. This could in turn halt Golden downstream processing.
+The production deployment was two Databricks jobs: one Bronze job and one Silver job with multiple tasks corresponding to the Silver streaming queries. Tasks had automatic retries, but a failure that required code or configuration changes could leave one Silver process unavailable. Other Silver processes could continue, while the completion table correctly withheld the file because the full set of acknowledgements had not arrived. This could in turn halt Golden downstream processing.
 
-The legacy system had a useful contrast. It also produced Global records first and then produced Detail tables, but the outputs were created through the same overall job flow. This meant synchronization was largely implicit, although the parser was invoked twice.
+The legacy system had a useful contrast. It also produced the master table first and then produced Detail tables, but the outputs were created through the same overall job flow. This meant synchronization was largely implicit, although the parser was invoked twice.
 
 After the POC, I took ownership of productionization. There was additional work to reproduce the exact legacy business semantics and outputs.
 
@@ -52,13 +52,13 @@ Bronze and Silver required different tuning strategies. Bronze parsing is constr
 
 Silver has a different resource profile. Its expensive DataFrame transformations, joins, and other operations made memory pressure and execution time more sensitive to query shape and intermediate data.
 
-Another complexity was that Silver streaming queries consume the Global Delta table rather than the binary files directly. Streaming batch size therefore became indirectly related to the number and size of Parquet files in Global. When Global was fragmented into many small files, batch-size tuning had to compensate for the physical layout of the Delta table.
+Another complexity was that Silver streaming queries consume the master Delta table rather than the binary files directly. Streaming batch size therefore became indirectly related to the number and size of Parquet files in the master table. When the master table was fragmented into many small files, batch-size tuning had to compensate for the physical layout of the Delta table.
 
 The output side had the same kind of coupling. Poorly sized or fragmented Silver writes could create many small output files, which affected query efficiency and Delta transaction-log health. I found that optimized writes and auto compaction were important not only for keeping Parquet files reasonably compact, but also for maintaining healthy table behavior at large scale.
 
 At least one Silver table eventually reached roughly petabyte scale. This made physical file layout and Delta-log fragmentation operationally significant rather than theoretical.
 
-The production system eventually reached roughly 6–7 minutes from the timestamp when a file landed in the input folder to the point where its row appeared in synchro for small files. Large files generally remained around 15–17 minutes, which was acceptable to the business.
+The production system eventually reached roughly 6–7 minutes from the timestamp when a file landed in the input folder to the point where its row appeared in the completion table for small files. Large files generally remained around 15–17 minutes, which was acceptable to the business.
 
 I also investigated Silver partitioning. The original partitioning used ingestion_date, which was consistent with how the pipeline created and propagated the data. However, users and downstream workloads primarily filtered on business columns. After researching partitioning strategies and running smaller experiments and statistical checks, I added an additional business-driven partitioning column to the two largest Silver tables. The smaller tables remained on the existing approach because their query behavior was acceptable with ingestion_date.
 
@@ -92,15 +92,15 @@ The production timings, file-size distribution, partitioning decisions, and syst
 
 The strongest lesson is that the POC established architectural feasibility and a promising benchmark, but it did not establish production capacity or an end-to-end SLA.
 
-The four-minute POC result and the eventual 6–7 minute production measurement should not be compared as though they were the same metric. The production measurement included the real file-arrival-to-synchro boundary and a substantially more complete system. The large-file range also behaved differently and was governed by a different workload profile.
+The four-minute POC result and the eventual 6–7 minute production measurement should not be compared as though they were the same metric. The production measurement included the real file-arrival-to-completion-table boundary and a substantially more complete system. The large-file range also behaved differently and was governed by a different workload profile.
 
 The new architecture made an important improvement over the legacy system by avoiding duplicated binary parsing. However, it traded some implicit guarantees for explicit distributed coordination.
 
-In the legacy system, synchronization between Silver outputs was largely an emergent property of one execution flow producing the related tables. In the new system, Silver streams were deliberately independent. Synchro therefore became an explicit fan-out/fan-in completion barrier.
+In the legacy system, synchronization between Silver outputs was largely an emergent property of one execution flow producing the related tables. In the new system, Silver streams were deliberately independent. The completion table therefore became an explicit fan-out/fan-in completion barrier.
 
-This also changed the failure model. A single Silver process could be down while other processes remained healthy, but the system could not safely release the file to Golden until all required Silver acknowledgements existed. The control tower was therefore more than an observability mechanism; it was part of the correctness and readiness contract.
+This also changed the failure model. A single Silver process could be down while other processes remained healthy, but the system could not safely release the file to Golden until all required Silver acknowledgements existed. The progress tables were therefore more than an observability mechanism; it was part of the correctness and readiness contract.
 
-The production tuning work showed that performance was not a property of the Spark transformations alone. Logical batch boundaries were coupled to physical Parquet layout in Global, and Global layout in turn influenced Silver execution behavior. Similarly, Silver output layout influenced future reads and Delta-log health.
+The production tuning work showed that performance was not a property of the Spark transformations alone. Logical batch boundaries were coupled to physical Parquet layout in the master table, and that layout in turn influenced Silver execution behavior. Similarly, Silver output layout influenced future reads and Delta-log health.
 
 The workload specialization in Bronze also made more sense once the real file distribution and binary parsing constraint were considered. Small, medium, and large files were materially different resource regimes, and especially large files could not be made arbitrarily more parallel by splitting the binary input.
 

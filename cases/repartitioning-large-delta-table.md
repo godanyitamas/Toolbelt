@@ -31,12 +31,12 @@ There was strong pressure to migrate the table and its jobs to a new Unity Catal
 
 The process rework required a different physical partitioning scheme. The new table introduced `ingestion_date`, representing the day data was written, plus one functional partition column. Historical rows did not have `ingestion_date`, and some of the new partition-driving values were null or incorrect.
 
-A related `global_records` table contained the correct values and was treated as the source of truth. Where the historical ingestion date could not be determined exactly, it had to be approximated, which introduced some reconstruction error.
+A related per-file master table (one row per file) contained the correct values and was treated as the source of truth. Where the historical ingestion date could not be determined exactly, it had to be approximated, which introduced some reconstruction error.
 
 I initially built a Spark Structured Streaming job that would:
 
 - read the old table;
-- join it with `global_records`;
+- join it with the master table;
 - repair the historical data;
 - write the corrected rows into a new partitioned Delta table.
 
@@ -61,7 +61,7 @@ The batch process was designed to be restartable. If a date failed or produced c
 
 For validation, I compared old and new data through row counts and value-to-value comparisons at a smaller scale. The transformation itself:
 
-- inner-joined against `global_records`;
+- inner-joined against the master table;
 - removed duplicates;
 - filled null values;
 - took the ingestion date from the trusted source where available.
@@ -114,7 +114,7 @@ The partition-scoped batch approach also reduced the amount of state each run ha
 
 The failed streaming approach exposed another important operational issue: a long-running computation over a mutable Delta table can become vulnerable to lifecycle operations such as file cleanup when its processing time is large enough. The exact file-retention mechanics are not fully reconstructable now, but the observed outcome was that the slow stream eventually lost data it still required.
 
-The `global_records` join was a separate correctness mechanism. Its importance was that the migration did not simply move rows into a new physical layout; it also had to reconstruct and repair the values used by that layout. The physical repartitioning and historical data remediation therefore had to be treated as one transformation, even though the underlying concerns were distinct.
+The master-table join was a separate correctness mechanism. Its importance was that the migration did not simply move rows into a new physical layout; it also had to reconstruct and repair the values used by that layout. The physical repartitioning and historical data remediation therefore had to be treated as one transformation, even though the underlying concerns were distinct.
 
 ---
 
