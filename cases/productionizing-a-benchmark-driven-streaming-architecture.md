@@ -79,7 +79,7 @@ Once I became responsible for the production system, I had to reason about a muc
 ## Records I checked
 
 - AGENTS.md and the casebook's retrospective workflow and template.
-- Existing Toolbelt cases on parser performance, large Delta-table migration, Spark join/pruning optimization, late-arriving data, and Databricks cost intelligence.
+- Existing cases in this casebook on parser performance, large Delta-table migration, Spark join/pruning optimization, late-arriving data, and Databricks cost intelligence.
 - The current case material is primarily a reconstruction from my recollection rather than from contemporaneous project records.
 
 ### What the records establish
