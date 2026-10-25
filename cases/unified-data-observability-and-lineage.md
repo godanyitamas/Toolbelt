@@ -226,7 +226,7 @@ Logical key: (`query_id`, `batch_id`, `source_id`) + key object (+ plant scope).
 - Offset-level message detail comes from Bronze by (`_query_id`, `_batch_id`, partition).
 - A timestamp is valid only if non-null and `timestampType <> -1`; negative ages are kept as evidence.
 - Telemetry append per batch with `txnAppId` = query id, `txnVersion` = batch id.
-- Layout: liquid clustering on (`job_name`, `batch_date`), predictive optimization; no partitioning. Message rows (batch × partition) can outnumber file rows.
+- Layout: liquid clustering on (`job_name`, `batch_date`), predictive optimization; no partitioning. `job_name` leads because readers, people and reports, know jobs by name. Message rows (batch × partition) can outnumber file rows.
 
 ### Facts and dependencies
 
@@ -234,7 +234,7 @@ Logical key: (`query_id`, `batch_id`, `source_id`) + key object (+ plant scope).
 - Weighted trends use `SUM(sum) / NULLIF(SUM(count), 0)`, never `AVG(batch_mean)`. A positive count with a missing sum is an integrity failure.
 - Histograms in facts: merge partition arrays per batch (exact); derive exact shares at bounds and interpolated percentiles (flag open tails); keep merged arrays so daily rollups merge facts again. Completion-window percentiles use completion arrays.
 - One age population per batch assumes all its sources share one timestamp meaning (observed, not checked).
-- `hourly_facts`: one row per (`job_id`, `source_id`, processing hour), built from raw, persisted; refresh rewrites recent hours. Details in `decisions/batch-telemetry-model.md`.
+- `hourly_facts`: one row per (`job_id`, `source_id`, processing hour), built from raw, persisted, clustered on (`job_name`, `hour_date`); refresh rewrites recent hours. Details in `decisions/batch-telemetry-model.md`.
 - `batch_dependencies`: (`upstream_query_id`, `upstream_batch_id`, downstream query/batch, consumed Delta table, `consumed_row_count`), summed over plant subdivisions. Keep known references even without producer facts; left-join facts on both sides; do not clamp negative hand-off times.
 - **Formation is not established:** a reader's file admission limits can split one telemetry commit, producing partial facts. Run the commit-split experiment before choosing reconciliation.
 - Optional platform enrichment ([jobs system tables](https://docs.databricks.com/aws/en/admin/system-tables/jobs), [billable usage](https://docs.databricks.com/aws/en/admin/system-tables/billing)): filter to the workspace, collapse run slices and SCD2 versions before joining, keep one row per batch. Run usage is not per-batch cost without an allocation rule.
@@ -424,7 +424,7 @@ The stronger conclusion is about reasoning: establish grain, counted population,
 
 Potential connections, not evidence that the problem is already solved:
 
-- `cases/productionizing-a-benchmark-driven-streaming-architecture.md`: control-tower tables as correctness/readiness coordination.
+- `cases/productionizing-a-benchmark-driven-streaming-architecture.md`: file-level progress tables as correctness/readiness coordination.
 - `cases/databricks-cost-intelligence-loop.md`: `job_id`/`job_run_id` in telemetry enable cost per process or run; batch-level cost needs an explicit allocation rule.
 - `cases/databricks-comment-metadata-ownership.md`: business owns freshness expectations; engineering owns the mechanism.
 - `cases/streaming-file-parser-rework.md`: file size vs duration per batch would have surfaced large-file pressure earlier.

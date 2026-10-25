@@ -29,7 +29,7 @@ I needed to build a complicated Spark job that produced aggregated results in a 
 
 The job joined this batch with several very large tables before applying business rules and aggregations. The joins and aggregations were slow and memory-heavy, and some executions ran out of memory.
 
-The participating tables shared partition columns because I had been involved in their partitioning strategy. I used the initial batch to build a predicate containing the distinct partition-value combinations, joined with `OR`, and applied it to the other table inputs. I also selected only the columns needed from each input.
+The participating tables shared partition columns because I had been involved in their partitioning strategy. One of them is the table repartitioned in `cases/repartitioning-large-delta-table.md`: its partitions already suited this job, but the job did not benefit from them until it pruned explicitly. I used the initial batch to build a predicate containing the distinct partition-value combinations, joined with `OR`, and applied it to the other table inputs. I also selected only the columns needed from each input.
 
 I added improvements one at a time. Partition pruning helped substantially. Photon then made a large difference. I also configured automatic and adaptive broadcast-join thresholds. In the Spark UI, the same joins took less time when executed as broadcast joins.
 

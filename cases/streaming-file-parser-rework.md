@@ -42,6 +42,7 @@ My current explanation is therefore that both whole-file materialization and rep
 - Both implementations ran against the same dataset for two weeks on a production-equivalent cluster setup. A comparison notebook checked file and row counts and value-level matches across outputs.
 - I created local test files for selected business rejection rules.
 - Batch-duration metrics from the audit data covered all Delta writes. The reported speedup was roughly an order of magnitude on a representative workload and much larger on a large-file stress sample. The versions ran in parallel, so shared-cluster contention may affect the exact ratio.
+- After the rewrite, the job ran with substantially lower resource requirements and its approximate monthly cost fell by about 90%, based on system-table cost calculations cross-checked with cost reports (`cases/databricks-cost-intelligence-loop.md`). This measures the combined changes; it does not separate the parser rewrite from caching.
 
 ## Hypotheses
 

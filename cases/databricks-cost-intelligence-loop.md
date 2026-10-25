@@ -154,7 +154,7 @@ The smaller cluster maintained healthy resource margins and batch completion tim
 
 This was a relatively low-effort change with a large apparent economic impact.
 
-The approximate cost moved from about $3,000/month to about $300/month.
+The approximate monthly cost fell by about 90%.
 
 ### Concrete opportunity: parser rewrite
 
@@ -162,13 +162,13 @@ A separate workload was running an allocation-heavy parser on a large cluster an
 
 I rewrote the parser, reducing the allocation and resource pressure. The resulting job was lighter and faster and could run with substantially lower resource requirements.
 
-The approximate cost moved from about $3,000/month to about $300/month.
+The approximate monthly cost fell by about 90%.
 
-The detailed technical investigation is documented separately in the parser rework case; this case is concerned with how cost/performance observability helped identify and prioritize the opportunity.
+The detailed technical investigation is documented separately in `cases/streaming-file-parser-rework.md`; this case is concerned with how cost/performance observability helped identify and prioritize the opportunity.
 
 ### Economic outcome
 
-Across these two examples, the approximate recurring cost reduction was about $5,000/month.
+Across these two examples, the approximate recurring reduction was about 90% of the two workloads' combined monthly cost.
 
 The figures are based on system-table cost calculations and were checked against actual cost reporting. The exact sustained run-rate and attribution should be treated as an open measurement item until the before/after periods are documented more rigorously.
 
@@ -178,7 +178,7 @@ I showed the capability to higher-level stakeholders in the project.
 
 The response was not only interest in the dashboard itself. I was asked to support another developer in creating a similar cost-monitoring dashboard for other teams.
 
-That other team does not have the same control-tower metrics table and has different workload characteristics.
+That other team does not have the same file-level progress table and has different workload characteristics.
 
 My main recommendation was therefore not to copy the existing dashboard mechanically. I advised the developer to work with someone who has deep knowledge of that team's jobs and processes so that the tool can expose the behaviors that are genuinely problematic for their workloads.
 
@@ -264,7 +264,7 @@ This is important because cost optimization is not limited to infrastructure rig
 
 The request to support another team created an early test of transferability.
 
-Because that team has different workload characteristics and does not share the same control-tower table, I advised treating the existing dashboard as an example of the method rather than as a fixed implementation.
+Because that team has different workload characteristics and does not share the same file-level progress table, I advised treating the existing dashboard as an example of the method rather than as a fixed implementation.
 
 The current approach is to pair the engineer building the tool with someone who deeply understands that team's workloads and use that knowledge to decide which signals are worth exposing.
 
@@ -282,10 +282,10 @@ The dashboard combines generic platform data with workload-specific telemetry an
 
 Two examples provided evidence of real economic value:
 
-- a low-effort streaming cluster right-sizing change, reducing approximate monthly cost from $3,000 to $300;
-- a deeper parser rewrite, also reducing approximate monthly cost from $3,000 to $300 while improving the workload itself.
+- a low-effort streaming cluster right-sizing change, reducing its approximate monthly cost by about 90%;
+- a deeper parser rewrite, also reducing its approximate monthly cost by about 90% while improving the workload itself.
 
-Together these represent approximately $5,000/month of apparent recurring cost reduction, based on system-table calculations cross-checked with actual cost reports.
+Together these represent an apparent recurring reduction of about 90% of both workloads' combined monthly cost, based on system-table calculations cross-checked with actual cost reports.
 
 The work also generated an external signal of value: another team is now starting to build a similar capability, with my guidance.
 
