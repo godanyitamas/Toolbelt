@@ -80,6 +80,10 @@ The conceptual flow became:
 
 The solution reached production and became the standard way we manage these comments.
 
+### Layout keys in view comments
+
+A unified job I designed also stamps the partition and liquid clustering keys of the underlying tables into the generic comment of a view. Any view I create is therefore enriched automatically with the layout its readers should filter on. *(Added from memory in the repo review of 2026-10-25; not checked against records.)*
+
 ### Making the change operationally safer
 
 While designing the solution, I also considered the possible effect of metadata changes on upstream and downstream jobs.
