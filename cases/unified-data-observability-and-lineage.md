@@ -131,6 +131,16 @@ Histogram bucket counts merge exactly only for compatible bounds/version, metric
 
 Contract details: `decisions/message-histogram-contract-v1.md`.
 
+### 2026-10-25: trend layer
+
+- **Changed the question:** exact hourly file percentiles need raw (batch medians do not merge), and hourly message statistics from raw equal those from facts. Building hourly trends on top of `batch_facts` therefore saves no calculation.
+- **Decided:** a persisted `hourly_facts` table built directly from raw, one row per (`job_id`, `source_id`, processing hour in UTC), serving every time-window monitoring purpose; `batch_facts` stays and is also persisted, for batch-based reports and visualizations. Keyed on `job_id` because query ids change after a checkpoint reset.
+- **Why persist:** monitoring jobs and dashboards today recompute statistics on every refresh; computing them once on the clustered raw table is expected to be cheap and to make reads faster (not measured). Retention was not the reason.
+- **Decided:** daily file percentiles are not needed by current requests; a view over raw pruned by `batch_date` suffices while raw is retained.
+- **Accepted cost:** persisted tables need a refresh that rewrites recent hours and batches for late or replayed batches and split commits.
+
+Details: `decisions/batch-telemetry-model.md`.
+
 ---
 
 ## Evidence
@@ -358,6 +368,7 @@ Id mix-up check (overlapping windows/keys across streams); per-partition offset 
 **Facts, lineage and layout**
 
 - How will whole-batch formation be reconciled when readers split telemetry commits?
+- How far back must the `hourly_facts` and `batch_facts` builds rewrite to absorb late or replayed batches?
 - What will enforce envelope consistency, uniqueness and population checks before metrics are published?
 - How much history is needed to resolve known references? Is Bronze retention long enough?
 - What evidence identifies the exact downstream population when ancestry is insufficient?
@@ -406,6 +417,7 @@ The stronger conclusion is about reasoning: establish grain, counted population,
 - One atomic writer commit is not necessarily one complete reader micro-batch. Producer completion also need not precede consumer start.
 - Storage annotations and encoders do not normalize incoming Spark expression types. The persisted schema and actual DataFrame types must agree.
 - Backward ancestry can work without enumerating outputs, but exact per-target attribution and forward questions ("what's pending?") need additional evidence.
+- Trend grain and question grain differ. Batch grain answers batch questions; time-window trends aggregate raw directly, because a non-mergeable statistic at an intermediate grain forces a return to raw anyway. *(Proposed wording; adjust.)*
 
 ## Connections
 
