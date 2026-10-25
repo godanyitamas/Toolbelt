@@ -18,12 +18,12 @@ topics:
 
 > **Handoff (2026-10-23)**
 >
-> - **Settled:** three grains (raw `batch_telemetry`, flat `batch_facts` per batch, `batch_dependencies` edges), Spark/platform identity, one raw table → `decisions/batch-telemetry-model.md`. Message histograms version 1, timestamp type dropped → `decisions/message-histogram-contract-v1.md`.
+> - **Settled:** three grains (raw `batch_telemetry`, flat `batch_facts` per batch, `batch_dependencies` edges), Spark/platform identity, one raw table → `decisions/batch-telemetry-model.md`. Persisted `hourly_facts` from raw for trends, `batch_facts` also persisted (2026-10-25). Message histograms version 1, timestamp type dropped → `decisions/message-histogram-contract-v1.md`.
 > - **Local code (uncommitted, not deployed):** Core constants/schema/writer compile, seven focused tests passed; the adapted Kafka builder's extracted telemetry method passed seven Spark tests. The timestamp-type grouping and column are now removed locally (2026-10-23). The `-1` validity filter and the 1969 conversion test are deliberately deferred as low priority; fallback guard proposed below.
 > - **Measured (one production day):** size/age distributions; histogram percentile errors against exact references; completion-age shares. One population exceeds the 2–5 min expectation (see Evidence).
 > - **Not verified:** identity lifetime (H1), replay (H2/H3), deployed round-trip, full module build, facts build, commit-split completeness, lineage traversal, cross-day stability, performance.
 > - **Scope clarified (2026-10-23):** engineering delivers metrics; the customer's business side owns alert policy. Monitored families: volume per time window and message age.
-> - **Next:** investigate the slow population; second-day histogram comparison; first facts build with histograms; H1 and replay tests.
+> - **Next:** investigate the slow population; second-day histogram comparison; first facts build with histograms; first `hourly_facts` build; H1 and replay tests.
 
 ## Problem
 
@@ -56,7 +56,7 @@ Preserved as written at the start; later sections show what was challenged.
 
 ## What I currently think
 
-One batch is the grain for generic duration, workload, source-age, cadence and coverage trends; one observed batch dependency is the grain for relationships. Raw telemetry retains plant/file/partition detail. The useful common envelope is identity and processing timing, followed by source-specific input volumes and statistics, not a universal business-row count.
+One hour per job and source, aggregated directly from raw, is the grain for time-window trends (volume, duration, age, size); one batch is the grain for batch questions, cadence and per-batch reports; one observed batch dependency is the grain for relationships. Raw telemetry retains plant/file/partition detail. The useful common envelope is identity and processing timing, followed by source-specific input volumes and statistics, not a universal business-row count.
 
 A shared row shape and stable keys are not enough: each metric needs a declared population, timestamp meaning and coverage. Convenient means and bounds should be built once with the facts, while sums/counts remain available for correct weighted rollups. Local stage statistics, ancestral context, processing cadence and backlog still answer different questions.
 
@@ -130,6 +130,16 @@ Histogram bucket counts merge exactly only for compatible bounds/version, metric
 - **Clarified expectation:** Kafka MESSAGE jobs should make parsed Bronze data available roughly 2–5 minutes after publication (not files; not established for Event Hubs).
 
 Contract details: `decisions/message-histogram-contract-v1.md`.
+
+### 2026-10-25: trend layer
+
+- **Changed the question:** exact hourly file percentiles need raw (batch medians do not merge), and hourly message statistics from raw equal those from facts. Building hourly trends on top of `batch_facts` therefore saves no calculation.
+- **Decided:** a persisted `hourly_facts` table built directly from raw, one row per (`job_id`, `source_id`, processing hour in UTC), serving every time-window monitoring purpose; `batch_facts` stays and is also persisted, for batch-based reports and visualizations. Keyed on `job_id` because query ids change after a checkpoint reset.
+- **Why persist:** monitoring jobs and dashboards today recompute statistics on every refresh; computing them once on the clustered raw table is expected to be cheap and to make reads faster (not measured). Retention was not the reason.
+- **Decided:** daily file percentiles are not needed by current requests; a view over raw pruned by `batch_date` suffices while raw is retained.
+- **Accepted cost:** persisted tables need a refresh that rewrites recent hours and batches for late or replayed batches and split commits.
+
+Details: `decisions/batch-telemetry-model.md`.
 
 ---
 
@@ -224,6 +234,7 @@ Logical key: (`query_id`, `batch_id`, `source_id`) + key object (+ plant scope).
 - Weighted trends use `SUM(sum) / NULLIF(SUM(count), 0)`, never `AVG(batch_mean)`. A positive count with a missing sum is an integrity failure.
 - Histograms in facts: merge partition arrays per batch (exact); derive exact shares at bounds and interpolated percentiles (flag open tails); keep merged arrays so daily rollups merge facts again. Completion-window percentiles use completion arrays.
 - One age population per batch assumes all its sources share one timestamp meaning (observed, not checked).
+- `hourly_facts`: one row per (`job_id`, `source_id`, processing hour), built from raw, persisted; refresh rewrites recent hours. Details in `decisions/batch-telemetry-model.md`.
 - `batch_dependencies`: (`upstream_query_id`, `upstream_batch_id`, downstream query/batch, consumed Delta table, `consumed_row_count`), summed over plant subdivisions. Keep known references even without producer facts; left-join facts on both sides; do not clamp negative hand-off times.
 - **Formation is not established:** a reader's file admission limits can split one telemetry commit, producing partial facts. Run the commit-split experiment before choosing reconciliation.
 - Optional platform enrichment ([jobs system tables](https://docs.databricks.com/aws/en/admin/system-tables/jobs), [billable usage](https://docs.databricks.com/aws/en/admin/system-tables/billing)): filter to the workspace, collapse run slices and SCD2 versions before joining, keep one row per batch. Run usage is not per-batch cost without an allocation rule.
@@ -245,11 +256,11 @@ Logical key: (`query_id`, `batch_id`, `source_id`) + key object (+ plant scope).
 - **Two metric families to trend:**
   - **Volume per time window** (primary): `SUM(input_message_count)` per hour/day and source. Messages per batch stays a diagnostic only: it depends on trigger cadence and batch size, and a batch catching up on backlog looks like a volume spike although the source did not change. Growing batch sizes can indicate a consumer falling behind.
   - **Message age:** completion-age shares at the 120/300 s bounds (exact from merged histograms) plus interpolated p50/p95; means from sums.
-- **Granularity undecided** (hourly vs daily).
+- **Granularity:** engineering stores hourly (`hourly_facts`); daily is derived. How fast a problem must be noticed, and therefore whether alerts act hourly or report daily, stays with the business side.
 
 **Agent proposals, not decided:**
 
-- Histograms and sums merge exactly at any window, so the facts support both granularities; an hourly base with daily rollups is a reasonable default. For a 2–5 min expectation, daily works as a trend, not for reacting. The deciding question for the business side: how fast must someone notice a problem?
+- *(Decided 2026-10-25: hourly base.)* Histograms and sums merge exactly at any window, so the facts support both granularities; an hourly base with daily rollups is a reasonable default. For a 2–5 min expectation, daily works as a trend, not for reacting. The deciding question for the business side: how fast must someone notice a problem?
 - Trend baselines should account for seasonality (shifts, production schedules): compare with the same hour on previous weeks rather than the previous hour.
 - Zero volume is invisible as rows (no input, no batch); detect it from the expected-process list left-joined to observations, as above.
 - **Fallback for the deferred `-1` filter:** if a batch's `message_min_ts` is implausibly old (e.g. before 2000), the facts build nulls its age metrics and flags it, so one invalid timestamp cannot corrupt means or histograms unnoticed.
@@ -301,7 +312,7 @@ Id mix-up check (overlapping windows/keys across streams); per-partition offset 
 | Per-module reporting value object | Trait gives the same compile-time guarantee with less code | Fallback for configs outside Core |
 | Message one row per message | Duplicates Bronze | Rejected |
 | Partitioning by job × date (+ layer) | Tiny skewed partitions | Rejected |
-| Several physical gold tables | No measured need; views suffice | Materialize on evidence |
+| Several physical gold tables | No measured need; views suffice | Two persisted (`batch_facts`, `hourly_facts`) for expected monitoring read cost, not measured; others stay views |
 | Source/plant-grain facts, `input_scopes` or `upstream_units` arrays | Membership cannot attribute batch metrics | Rejected |
 | Lean facts with all means in presentation views | Repeats work in every monitor | Superseded |
 | Product-named `KAFKA` type | Broker belongs in `message_system` | Superseded by `MESSAGE` |
@@ -358,6 +369,7 @@ Id mix-up check (overlapping windows/keys across streams); per-partition offset 
 **Facts, lineage and layout**
 
 - How will whole-batch formation be reconciled when readers split telemetry commits?
+- How far back must the `hourly_facts` and `batch_facts` builds rewrite to absorb late or replayed batches?
 - What will enforce envelope consistency, uniqueness and population checks before metrics are published?
 - How much history is needed to resolve known references? Is Bronze retention long enough?
 - What evidence identifies the exact downstream population when ancestry is insufficient?
@@ -379,7 +391,7 @@ Id mix-up check (overlapping windows/keys across streams); per-partition offset 
 
 ## Conclusion (provisional, 2026-10-23)
 
-The model is settled at three complementary grains: raw input evidence, one flat fact per batch, and observed batch dependency edges. Generic monitoring needs ready-to-use means, bounds and coverage with sufficient statistics for weighted trends, not plant/source-grain facts or membership arrays. Message percentiles come from versioned histograms that merge exactly and interpolate approximately; one-day measurements support the version-1 bounds, without an accepted tolerance or cross-day evidence.
+The model is settled at four complementary grains: raw input evidence, one flat fact per batch, one hourly row per job and source for time-window trends, and observed batch dependency edges. Monitoring reads persisted, ready-to-use statistics instead of recomputing them on each refresh; it needs means, bounds and coverage with sufficient statistics for weighted trends, not plant/source-grain facts or membership arrays. Message percentiles come from versioned histograms that merge exactly and interpolate approximately; one-day measurements support the version-1 bounds, without an accepted tolerance or cross-day evidence.
 
 The POC is not yet a verified monitoring or lineage solution. Local compilation and focused tests narrow implementation uncertainty, but identity lifetime, replay, deployed storage, facts formation and lineage traversal are unverified. The first real freshness signal, one population well above the 2–5 min expectation, is observed but unexplained.
 
@@ -406,6 +418,7 @@ The stronger conclusion is about reasoning: establish grain, counted population,
 - One atomic writer commit is not necessarily one complete reader micro-batch. Producer completion also need not precede consumer start.
 - Storage annotations and encoders do not normalize incoming Spark expression types. The persisted schema and actual DataFrame types must agree.
 - Backward ancestry can work without enumerating outputs, but exact per-target attribution and forward questions ("what's pending?") need additional evidence.
+- Trend grain and question grain differ. Batch grain answers batch questions; time-window trends aggregate raw directly, because a non-mergeable statistic at an intermediate grain forces a return to raw anyway. *(Proposed wording; adjust.)*
 
 ## Connections
 
@@ -420,4 +433,4 @@ Potential connections, not evidence that the problem is already solved:
 
 ## Reusable lesson (provisional)
 
-Choose batch grain for generic monitoring and edge grain for relationships; retain raw detail for drill-down. Mergeable evidence is not automatically an exact percentile or a compatible population. Evaluate thresholds separately from interpolation, compare absolute and relative error, and capture completion with the same clock used in storage. Keep local statistics, ancestry, cadence and backlog separate; neither a dependency edge nor a passing local test proves more than its measured scope.
+Choose the grain by the question: time windows for trends, batches for batch questions, edges for relationships, built from the finest evidence that still has what each statistic needs; retain raw detail for drill-down. Mergeable evidence is not automatically an exact percentile or a compatible population. Evaluate thresholds separately from interpolation, compare absolute and relative error, and capture completion with the same clock used in storage. Keep local statistics, ancestry, cadence and backlog separate; neither a dependency edge nor a passing local test proves more than its measured scope.
