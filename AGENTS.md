@@ -44,7 +44,7 @@ Interaction pattern: **my model → AI challenge → investigation → AI review
 
 ## Working on Cases
 
-Follow `.ai/workflows/new-case.md` for new cases. Case structure is defined by `templates/case.md` (or `templates/retrospective-case.md` for reconstructions from memory). The two most important sections are **What I currently think** and **What changed in my understanding?**
+Follow `.ai/workflows/new-case.md` for new cases, `.ai/workflows/review-case.md` to review a case, and `.ai/workflows/review-repo.md` for a periodic cross-case review. Case structure is defined by `templates/case.md` (or `templates/retrospective-case.md` for reconstructions from memory). The two most important sections are **What I currently think** and **What changed in my understanding?**
 
 For trivial edits (typos, links, metadata, inbox capture), skip the challenge workflow.
 
