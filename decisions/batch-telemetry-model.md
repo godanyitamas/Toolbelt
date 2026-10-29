@@ -37,10 +37,10 @@ A file-only `processed_files` reporting table had to be extended to file, messag
 
 - **One raw table, one shared writer:** `process_telemetry`, one row per input object consumed by one batch: a file; a message topic/partition range; an upstream Delta batch within the declared source/plant scope.
 - **Facts:** `process_metrics_per_batch`, exactly one flat row per (`query_id`, `batch_id`), scalar `source_type`, with ready-to-use means, bounds, coverage and completion ages built alongside mergeable sums/counts.
-- **Relationships:** `batch_dependencies`, observed producer-batch → consumer-batch edges per consumed Delta table.
+- **Relationships:** `process_batch_dependencies`, observed producer-batch → consumer-batch edges per consumed Delta table.
 - **Hourly trends (2026-10-25):** `process_metrics_per_hour`, one row per (`job_id`, `source_id`, processing hour of `batch_end_ts` in UTC), built directly from raw: volume, sums/counts, merged message histograms, exact file size/age percentiles and threshold counts, and processing-time percentiles over the hour's distinct batches. Serves every time-window monitoring purpose.
 - **Layout (2026-10-25):** raw clustered on (`job_name`, `batch_date`), `process_metrics_per_hour` on (`job_name`, `hour_date`); no partitioning. `job_name` leads because the readers, people and reports, know jobs by name. A renamed job splits name-filtered history; trend continuity uses `job_id`.
-- **Naming (2026-10-29):** raw `process_telemetry`, per-batch `process_metrics_per_batch`, hourly `process_metrics_per_hour` (formerly `batch_telemetry`, `batch_facts`, `hourly_facts`).
+- **Naming (2026-10-29):** raw `process_telemetry`, per-batch `process_metrics_per_batch`, hourly `process_metrics_per_hour`, edges `process_batch_dependencies` (formerly `batch_telemetry`, `batch_facts`, `hourly_facts`, `batch_dependencies`).
 - **`process_metrics_per_batch` and `process_metrics_per_hour` are persisted Delta tables (2026-10-25)**; other derived objects (daily rollups, daily file percentiles from raw) start as views and are materialized only when measured cost or retained history requires it.
 - **Identity:** (`query_id`, `batch_id`) from the SparkContext local property `sql.streaming.queryId` read on the batch thread; `job_id` for continuity; run ids per attempt; job/task names as labels only.
 - **Stamp on write, record on read:** producers propagate their query/batch identity in output data; consumers record the upstream keys they read.
