@@ -15,7 +15,7 @@ Case: `cases/unified-data-observability-and-lineage.md`
 
 ## Context
 
-Monitoring needs medians/percentiles of message age and value size per batch and over windows (day, week). Raw `batch_telemetry` holds one row per topic/partition per batch, so per-message values are gone after the builder runs. Scalar partition percentiles cannot be combined into batch or daily percentiles.
+Monitoring needs medians/percentiles of message age and value size per batch and over windows (day, week). Raw `process_telemetry` holds one row per topic/partition per batch, so per-message values are gone after the builder runs. Scalar partition percentiles cannot be combined into batch or daily percentiles.
 
 ## Constraints
 

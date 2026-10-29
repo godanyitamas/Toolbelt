@@ -23,7 +23,7 @@ Layout and access pattern form a contract. The layout is designed for the domina
 - **`cases/productionizing-a-benchmark-driven-streaming-architecture.md`:** an ingestion-oriented partitioning was consistent with the pipeline but a poor fit for consumers. For the two largest tables, business partition columns were justified by observed access patterns and experiments; smaller tables kept the original scheme. The master table's file layout also shaped downstream streaming batch sizes.
 - **`cases/repartitioning-large-delta-table.md`:** the new layout added a functional column next to `ingestion_date`, for the table's readers, among them the CDC job below.
 - **`cases/append-only-cdc-aggregation-pruning.md`:** the upstream partitions were already suitable, but join conditions alone did not make the downstream job benefit. An explicit predicate built from the batch's partition values did, confirmed as pruning in the Spark UI.
-- **`cases/unified-data-observability-and-lineage.md`:** partitioning by job and date was rejected (tiny, skewed partitions). Liquid clustering leads with `job_name` because people and reports know jobs by name, and `hourly_facts` is persisted because monitoring reads hourly.
+- **`cases/unified-data-observability-and-lineage.md`:** partitioning by job and date was rejected (tiny, skewed partitions). Liquid clustering leads with `job_name` because people and reports know jobs by name, and `process_metrics_per_hour` is persisted because monitoring reads hourly.
 
 ## Making the layout known
 

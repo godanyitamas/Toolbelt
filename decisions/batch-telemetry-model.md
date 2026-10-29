@@ -31,16 +31,17 @@ A file-only `processed_files` reporting table had to be extended to file, messag
 - **Facts grain:** one row per batch vs source/plant-grain facts vs batch rows with membership arrays (`input_scopes`, `upstream_units`).
 - **Identity:** session-wide listener vs SparkContext local property vs checkpoint `metadata` file.
 - **Write idempotency:** switch every module's data-write `txnAppId` to query id vs use query id only for telemetry.
-- **Trend layer (2026-10-25):** hourly trends derived from `batch_facts` vs an hourly table built from raw; derived objects as views vs persisted tables.
+- **Trend layer (2026-10-25):** hourly trends derived from `process_metrics_per_batch` vs an hourly table built from raw; derived objects as views vs persisted tables.
 
 ## Decision
 
-- **One raw table, one shared writer:** `batch_telemetry`, one row per input object consumed by one batch: a file; a message topic/partition range; an upstream Delta batch within the declared source/plant scope.
-- **Facts:** `batch_facts`, exactly one flat row per (`query_id`, `batch_id`), scalar `source_type`, with ready-to-use means, bounds, coverage and completion ages built alongside mergeable sums/counts.
+- **One raw table, one shared writer:** `process_telemetry`, one row per input object consumed by one batch: a file; a message topic/partition range; an upstream Delta batch within the declared source/plant scope.
+- **Facts:** `process_metrics_per_batch`, exactly one flat row per (`query_id`, `batch_id`), scalar `source_type`, with ready-to-use means, bounds, coverage and completion ages built alongside mergeable sums/counts.
 - **Relationships:** `batch_dependencies`, observed producer-batch → consumer-batch edges per consumed Delta table.
-- **Hourly trends (2026-10-25):** `hourly_facts`, one row per (`job_id`, `source_id`, processing hour of `batch_end_ts` in UTC), built directly from raw: volume, sums/counts, merged message histograms, exact file size/age percentiles and threshold counts, and processing-time percentiles over the hour's distinct batches. Serves every time-window monitoring purpose.
-- **Layout (2026-10-25):** raw clustered on (`job_name`, `batch_date`), `hourly_facts` on (`job_name`, `hour_date`); no partitioning. `job_name` leads because the readers, people and reports, know jobs by name. A renamed job splits name-filtered history; trend continuity uses `job_id`.
-- **`batch_facts` and `hourly_facts` are persisted Delta tables (2026-10-25)**; other derived objects (daily rollups, daily file percentiles from raw) start as views and are materialized only when measured cost or retained history requires it.
+- **Hourly trends (2026-10-25):** `process_metrics_per_hour`, one row per (`job_id`, `source_id`, processing hour of `batch_end_ts` in UTC), built directly from raw: volume, sums/counts, merged message histograms, exact file size/age percentiles and threshold counts, and processing-time percentiles over the hour's distinct batches. Serves every time-window monitoring purpose.
+- **Layout (2026-10-25):** raw clustered on (`job_name`, `batch_date`), `process_metrics_per_hour` on (`job_name`, `hour_date`); no partitioning. `job_name` leads because the readers, people and reports, know jobs by name. A renamed job splits name-filtered history; trend continuity uses `job_id`.
+- **Naming (2026-10-29):** raw `process_telemetry`, per-batch `process_metrics_per_batch`, hourly `process_metrics_per_hour` (formerly `batch_telemetry`, `batch_facts`, `hourly_facts`).
+- **`process_metrics_per_batch` and `process_metrics_per_hour` are persisted Delta tables (2026-10-25)**; other derived objects (daily rollups, daily file percentiles from raw) start as views and are materialized only when measured cost or retained history requires it.
 - **Identity:** (`query_id`, `batch_id`) from the SparkContext local property `sql.streaming.queryId` read on the batch thread; `job_id` for continuity; run ids per attempt; job/task names as labels only.
 - **Stamp on write, record on read:** producers propagate their query/batch identity in output data; consumers record the upstream keys they read.
 - **Telemetry idempotency only:** telemetry appends use `txnAppId` = query id, `txnVersion` = batch id. Module data-write transaction ids are not changed in this migration.
@@ -53,7 +54,7 @@ A file-only `processed_files` reporting table had to be extended to file, messag
 - With several queries per session, a session-wide "current id" can be overwritten by the last-started stream; as a `txnAppId` that can make Delta silently skip writes.
 - The hand-written name + date `txnAppId` mixes unit and continuity identity: a checkpoint reset with an unchanged date skips writes; a changed date with a kept checkpoint duplicates a replayed batch. Fixing that is a separate, riskier change than telemetry.
 - Monitoring jobs and dashboards today recompute their statistics on every refresh. Computing them once into persisted tables is cheap on a clustered, predictively optimized raw table and is expected to make reads faster and monitoring cheaper (expectation, not measured).
-- `batch_facts` serves batch-based reports and visualizations; `hourly_facts` serves time-window trends. Hourly is built from raw, not from `batch_facts`: facts add nothing for mergeable hourly statistics, file percentiles need raw anyway, and an hourly aggregation of raw does not depend on whole-batch formation (except processing time).
+- `process_metrics_per_batch` serves batch-based reports and visualizations; `process_metrics_per_hour` serves time-window trends. Hourly is built from raw, not from `process_metrics_per_batch`: facts add nothing for mergeable hourly statistics, file percentiles need raw anyway, and an hourly aggregation of raw does not depend on whole-batch formation (except processing time).
 - Hourly rows key on `job_id`, not `query_id`: the query id changes after a checkpoint reset, which would break the trend line for the same job and source.
 - Daily file percentiles are not needed by current requests; a view over raw, pruned by `batch_date`, suffices while raw is retained.
 

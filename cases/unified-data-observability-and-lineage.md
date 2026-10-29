@@ -18,12 +18,12 @@ topics:
 
 > **Handoff (2026-10-23)**
 >
-> - **Settled:** three grains (raw `batch_telemetry`, flat `batch_facts` per batch, `batch_dependencies` edges), Spark/platform identity, one raw table → `decisions/batch-telemetry-model.md`. Persisted `hourly_facts` from raw for trends, `batch_facts` also persisted (2026-10-25). Message histograms version 1, timestamp type dropped → `decisions/message-histogram-contract-v1.md`.
+> - **Settled:** three grains (raw `process_telemetry`, flat `process_metrics_per_batch` per batch, `batch_dependencies` edges), Spark/platform identity, one raw table → `decisions/batch-telemetry-model.md`. Persisted `process_metrics_per_hour` from raw for trends, `process_metrics_per_batch` also persisted (2026-10-25). Message histograms version 1, timestamp type dropped → `decisions/message-histogram-contract-v1.md`.
 > - **Local code (uncommitted, not deployed):** Core constants/schema/writer compile, seven focused tests passed; the adapted Kafka builder's extracted telemetry method passed seven Spark tests. The timestamp-type grouping and column are now removed locally (2026-10-23). The `-1` validity filter and the 1969 conversion test are deliberately deferred as low priority; fallback guard proposed below.
 > - **Measured (one production day):** size/age distributions; histogram percentile errors against exact references; completion-age shares. One population exceeds the 2–5 min expectation (see Evidence).
 > - **Not verified:** identity lifetime (H1), replay (H2/H3), deployed round-trip, full module build, facts build, commit-split completeness, lineage traversal, cross-day stability, performance.
 > - **Scope clarified (2026-10-23):** engineering delivers metrics; the customer's business side owns alert policy. Monitored families: volume per time window and message age.
-> - **Next:** investigate the slow population; second-day histogram comparison; first facts build with histograms; first `hourly_facts` build; H1 and replay tests.
+> - **Next:** investigate the slow population; second-day histogram comparison; first facts build with histograms; first `process_metrics_per_hour` build; H1 and replay tests.
 
 ## Problem
 
@@ -141,6 +141,10 @@ Contract details: `decisions/message-histogram-contract-v1.md`.
 
 Details: `decisions/batch-telemetry-model.md`.
 
+### 2026-10-29: table naming
+
+- **Decided:** `batch_telemetry` → `process_telemetry`, `batch_facts` → `process_metrics_per_batch`, `hourly_facts` → `process_metrics_per_hour`. Earlier log entries keep the names used at the time. Aggregation jobs that populate the two metrics tables from raw are in development.
+
 ---
 
 ## Evidence
@@ -230,11 +234,11 @@ Logical key: (`query_id`, `batch_id`, `source_id`) + key object (+ plant scope).
 
 ### Facts and dependencies
 
-- `batch_facts`: one flat row per batch; validate one source type and consistent envelope before selecting it. Build means, bounds, coverage and completion ages alongside sums/counts; zero denominators stay null; missing evidence never becomes complete coverage.
+- `process_metrics_per_batch`: one flat row per batch; validate one source type and consistent envelope before selecting it. Build means, bounds, coverage and completion ages alongside sums/counts; zero denominators stay null; missing evidence never becomes complete coverage.
 - Weighted trends use `SUM(sum) / NULLIF(SUM(count), 0)`, never `AVG(batch_mean)`. A positive count with a missing sum is an integrity failure.
 - Histograms in facts: merge partition arrays per batch (exact); derive exact shares at bounds and interpolated percentiles (flag open tails); keep merged arrays so daily rollups merge facts again. Completion-window percentiles use completion arrays.
 - One age population per batch assumes all its sources share one timestamp meaning (observed, not checked).
-- `hourly_facts`: one row per (`job_id`, `source_id`, processing hour), built from raw, persisted, clustered on (`job_name`, `hour_date`); refresh rewrites recent hours. Details in `decisions/batch-telemetry-model.md`.
+- `process_metrics_per_hour`: one row per (`job_id`, `source_id`, processing hour), built from raw, persisted, clustered on (`job_name`, `hour_date`); refresh rewrites recent hours. Details in `decisions/batch-telemetry-model.md`.
 - `batch_dependencies`: (`upstream_query_id`, `upstream_batch_id`, downstream query/batch, consumed Delta table, `consumed_row_count`), summed over plant subdivisions. Keep known references even without producer facts; left-join facts on both sides; do not clamp negative hand-off times.
 - **Formation is not established:** a reader's file admission limits can split one telemetry commit, producing partial facts. Run the commit-split experiment before choosing reconciliation.
 - Optional platform enrichment ([jobs system tables](https://docs.databricks.com/aws/en/admin/system-tables/jobs), [billable usage](https://docs.databricks.com/aws/en/admin/system-tables/billing)): filter to the workspace, collapse run slices and SCD2 versions before joining, keep one row per batch. Run usage is not per-batch cost without an allocation rule.
@@ -256,7 +260,7 @@ Logical key: (`query_id`, `batch_id`, `source_id`) + key object (+ plant scope).
 - **Two metric families to trend:**
   - **Volume per time window** (primary): `SUM(input_message_count)` per hour/day and source. Messages per batch stays a diagnostic only: it depends on trigger cadence and batch size, and a batch catching up on backlog looks like a volume spike although the source did not change. Growing batch sizes can indicate a consumer falling behind.
   - **Message age:** completion-age shares at the 120/300 s bounds (exact from merged histograms) plus interpolated p50/p95; means from sums.
-- **Granularity:** engineering stores hourly (`hourly_facts`); daily is derived. How fast a problem must be noticed, and therefore whether alerts act hourly or report daily, stays with the business side.
+- **Granularity:** engineering stores hourly (`process_metrics_per_hour`); daily is derived. How fast a problem must be noticed, and therefore whether alerts act hourly or report daily, stays with the business side.
 
 **Agent proposals, not decided:**
 
@@ -312,7 +316,7 @@ Id mix-up check (overlapping windows/keys across streams); per-partition offset 
 | Per-module reporting value object | Trait gives the same compile-time guarantee with less code | Fallback for configs outside Core |
 | Message one row per message | Duplicates Bronze | Rejected |
 | Partitioning by job × date (+ layer) | Tiny skewed partitions | Rejected |
-| Several physical gold tables | No measured need; views suffice | Two persisted (`batch_facts`, `hourly_facts`) for expected monitoring read cost, not measured; others stay views |
+| Several physical gold tables | No measured need; views suffice | Two persisted (`process_metrics_per_batch`, `process_metrics_per_hour`) for expected monitoring read cost, not measured; others stay views |
 | Source/plant-grain facts, `input_scopes` or `upstream_units` arrays | Membership cannot attribute batch metrics | Rejected |
 | Lean facts with all means in presentation views | Repeats work in every monitor | Superseded |
 | Product-named `KAFKA` type | Broker belongs in `message_system` | Superseded by `MESSAGE` |
@@ -369,7 +373,7 @@ Id mix-up check (overlapping windows/keys across streams); per-partition offset 
 **Facts, lineage and layout**
 
 - How will whole-batch formation be reconciled when readers split telemetry commits?
-- How far back must the `hourly_facts` and `batch_facts` builds rewrite to absorb late or replayed batches?
+- How far back must the `process_metrics_per_hour` and `process_metrics_per_batch` builds rewrite to absorb late or replayed batches?
 - What will enforce envelope consistency, uniqueness and population checks before metrics are published?
 - How much history is needed to resolve known references? Is Bronze retention long enough?
 - What evidence identifies the exact downstream population when ancestry is insufficient?
