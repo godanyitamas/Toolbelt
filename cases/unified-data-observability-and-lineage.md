@@ -18,12 +18,12 @@ topics:
 
 > **Handoff (2026-10-23)**
 >
-> - **Settled:** three grains (raw `batch_telemetry`, flat `batch_facts` per batch, `batch_dependencies` edges), Spark/platform identity, one raw table → `decisions/batch-telemetry-model.md`. Persisted `hourly_facts` from raw for trends, `batch_facts` also persisted (2026-10-25). Message histograms version 1, timestamp type dropped → `decisions/message-histogram-contract-v1.md`.
+> - **Settled:** three grains (raw `process_telemetry`, flat `process_metrics_per_batch` per batch, `process_batch_dependencies` edges), Spark/platform identity, one raw table → `decisions/batch-telemetry-model.md`. Persisted `process_metrics_per_hour` from raw for trends, `process_metrics_per_batch` also persisted (2026-10-25). Message histograms version 1, timestamp type dropped → `decisions/message-histogram-contract-v1.md`.
 > - **Local code (uncommitted, not deployed):** Core constants/schema/writer compile, seven focused tests passed; the adapted Kafka builder's extracted telemetry method passed seven Spark tests. The timestamp-type grouping and column are now removed locally (2026-10-23). The `-1` validity filter and the 1969 conversion test are deliberately deferred as low priority; fallback guard proposed below.
 > - **Measured (one production day):** size/age distributions; histogram percentile errors against exact references; completion-age shares. One population exceeds the 2–5 min expectation (see Evidence).
 > - **Not verified:** identity lifetime (H1), replay (H2/H3), deployed round-trip, full module build, facts build, commit-split completeness, lineage traversal, cross-day stability, performance.
 > - **Scope clarified (2026-10-23):** engineering delivers metrics; the customer's business side owns alert policy. Monitored families: volume per time window and message age.
-> - **Next:** investigate the slow population; second-day histogram comparison; first facts build with histograms; first `hourly_facts` build; H1 and replay tests.
+> - **Next:** investigate the slow population; second-day histogram comparison; first facts build with histograms; first `process_metrics_per_hour` build; H1 and replay tests.
 
 ## Problem
 
@@ -141,6 +141,21 @@ Contract details: `decisions/message-histogram-contract-v1.md`.
 
 Details: `decisions/batch-telemetry-model.md`.
 
+### 2026-10-29: table naming and aggregation jobs
+
+- **Decided:** `batch_telemetry` → `process_telemetry`, `batch_facts` → `process_metrics_per_batch`, `hourly_facts` → `process_metrics_per_hour`, `batch_dependencies` → `process_batch_dependencies`, hourly `hour_date` → `batch_end_hour` (UTC hour of `batch_end_ts`). `process_` is a namespace prefix, not a grain. Earlier log entries keep the names used at the time. Aggregation jobs that populate the two metrics tables from raw are in development.
+- **First implementation (local, not run in production):** a Structured Streaming job over `process_telemetry`, built on Core (histogram bounds). Each micro-batch is unioned with the raw rows of the same (`job_name`, `query_id`, `batch_id`, `batch_date`) from the table, deduplicated, aggregated and merged into the output on that table's keys. Hourly output re-reads the whole affected hour, not only the changed batches. Planned trigger: `availableNow` on a schedule.
+- **Why streaming:** checkpointed progress; a late, replayed or split raw commit arrives as new input and triggers its own recomputation, so no rewrite lookback has to be chosen. Recomputing from the table rather than from the micro-batch is what makes split commits (H12) converge and replays idempotent, provided the merge replaces matched rows rather than adding to them.
+- **Open risks (agent challenge, not verified):** `distinct` after the union also hides a genuine duplicate raw row, which the planned duplicate-key check should catch; using the micro-batch only for keys and the re-read for rows would avoid the union. The job must not report into `process_telemetry` through the Core wrapper, or it feeds itself. Deletes on raw (retention) break a streaming Delta source unless planned for. A checkpoint only moves forward: aggregation logic changes need a batch backfill over the same function. The current hour is partial by design. Merge source must be unique per target key.
+- **Decided:** the aggregation jobs run through the Core wrapper like every ingestor but return an empty dataset to reporting, because their outputs are not monitored.
+- **Retention (my reasoning, then agent challenge, not verified):** `process_telemetry` uses liquid clustering with predictive optimization, so vacuum runs automatically; I plan to extend retention so a failed aggregation job can resume. Challenge: vacuum deletes no rows; the risk is that clustering rewrites the files a stopped stream has not read yet, and after `delta.deletedFileRetentionDuration` (and `delta.logRetentionDuration` for the log) the resumed stream cannot read them. Size both to the longest tolerated outage. Deleting old rows from raw is a separate risk (a streaming source fails on deletes) and is not yet decided.
+- **Deletes (my view):** raw rows are not deleted by default; users occasionally delete rows ad hoc so that jobs reprocess a few files. A streaming option lets the aggregation stream continue, and the metrics describe what the stream did. **Agent challenge (not verified):** `ignoreDeletes` covers only deletes at partition boundaries, and raw has no partitions, so `skipChangeCommits` is likely needed. Because outputs are recomputed from the table, a later batch in the same hour silently drops the deleted rows from that hour's metrics while untouched hours keep them; whether metrics reflect a delete then depends on timing.
+- **Decided:** for files, raw telemetry is both evidence of ingestion and the processed-files ledger: deleting a file's row makes the job reprocess it. Metrics are not corrected retrospectively, and a later recomputation that drops deleted rows is also accepted. Consequence (agent note): after a delete, raw no longer shows the first processing of that file, so a downstream batch stamped by that earlier batch can resolve to fewer files than it read.
+- **Decided:** the aggregation stream reads raw with `skipChangeCommits` (`ignoreDeletes` is being deprecated, and other ad-hoc operations on the table are expected). `delta.deletedFileRetentionDuration` on raw = 14 days to begin with (default 7), so a stopped aggregation job can resume; revisit if longer outages must be tolerated. Log retention keeps its 30-day default, which already exceeds it.
+- **Decided:** a stalled aggregation job is detected by platform job-failure alerts; no raw-vs-output freshness check. Accepted gap: a run that succeeds without progressing goes unnoticed.
+- **Implementation:** the aggregation logic is one Scala function, reused by the stream and by any batch backfill. Under consideration: use the micro-batch only for keys and take rows from the re-read, instead of union + `distinct`.
+- **Tangent, later:** deletion vectors to speed up merges; Photon. Both are performance questions for H4, not design.
+
 ---
 
 ## Evidence
@@ -230,12 +245,12 @@ Logical key: (`query_id`, `batch_id`, `source_id`) + key object (+ plant scope).
 
 ### Facts and dependencies
 
-- `batch_facts`: one flat row per batch; validate one source type and consistent envelope before selecting it. Build means, bounds, coverage and completion ages alongside sums/counts; zero denominators stay null; missing evidence never becomes complete coverage.
+- `process_metrics_per_batch`: one flat row per batch; validate one source type and consistent envelope before selecting it. Build means, bounds, coverage and completion ages alongside sums/counts; zero denominators stay null; missing evidence never becomes complete coverage. Maintained by the streaming aggregation job: changed batches are re-read from raw and merged, replacing matched rows.
 - Weighted trends use `SUM(sum) / NULLIF(SUM(count), 0)`, never `AVG(batch_mean)`. A positive count with a missing sum is an integrity failure.
 - Histograms in facts: merge partition arrays per batch (exact); derive exact shares at bounds and interpolated percentiles (flag open tails); keep merged arrays so daily rollups merge facts again. Completion-window percentiles use completion arrays.
 - One age population per batch assumes all its sources share one timestamp meaning (observed, not checked).
-- `hourly_facts`: one row per (`job_id`, `source_id`, processing hour), built from raw, persisted, clustered on (`job_name`, `hour_date`); refresh rewrites recent hours. Details in `decisions/batch-telemetry-model.md`.
-- `batch_dependencies`: (`upstream_query_id`, `upstream_batch_id`, downstream query/batch, consumed Delta table, `consumed_row_count`), summed over plant subdivisions. Keep known references even without producer facts; left-join facts on both sides; do not clamp negative hand-off times.
+- `process_metrics_per_hour`: one row per (`job_id`, `source_id`, processing hour), built from raw, persisted, clustered on (`job_name`, `batch_end_hour`); maintained by the same streaming job, which re-reads every affected hour from raw and merges, replacing matched rows (no lookback). Details in `decisions/batch-telemetry-model.md`.
+- `process_batch_dependencies`: (`upstream_query_id`, `upstream_batch_id`, downstream query/batch, consumed Delta table, `consumed_row_count`), summed over plant subdivisions. Keep known references even without producer facts; left-join facts on both sides; do not clamp negative hand-off times.
 - **Formation is not established:** a reader's file admission limits can split one telemetry commit, producing partial facts. Run the commit-split experiment before choosing reconciliation.
 - Optional platform enrichment ([jobs system tables](https://docs.databricks.com/aws/en/admin/system-tables/jobs), [billable usage](https://docs.databricks.com/aws/en/admin/system-tables/billing)): filter to the workspace, collapse run slices and SCD2 versions before joining, keep one row per batch. Run usage is not per-batch cost without an allocation rule.
 
@@ -256,7 +271,7 @@ Logical key: (`query_id`, `batch_id`, `source_id`) + key object (+ plant scope).
 - **Two metric families to trend:**
   - **Volume per time window** (primary): `SUM(input_message_count)` per hour/day and source. Messages per batch stays a diagnostic only: it depends on trigger cadence and batch size, and a batch catching up on backlog looks like a volume spike although the source did not change. Growing batch sizes can indicate a consumer falling behind.
   - **Message age:** completion-age shares at the 120/300 s bounds (exact from merged histograms) plus interpolated p50/p95; means from sums.
-- **Granularity:** engineering stores hourly (`hourly_facts`); daily is derived. How fast a problem must be noticed, and therefore whether alerts act hourly or report daily, stays with the business side.
+- **Granularity:** engineering stores hourly (`process_metrics_per_hour`); daily is derived. How fast a problem must be noticed, and therefore whether alerts act hourly or report daily, stays with the business side.
 
 **Agent proposals, not decided:**
 
@@ -312,7 +327,7 @@ Id mix-up check (overlapping windows/keys across streams); per-partition offset 
 | Per-module reporting value object | Trait gives the same compile-time guarantee with less code | Fallback for configs outside Core |
 | Message one row per message | Duplicates Bronze | Rejected |
 | Partitioning by job × date (+ layer) | Tiny skewed partitions | Rejected |
-| Several physical gold tables | No measured need; views suffice | Two persisted (`batch_facts`, `hourly_facts`) for expected monitoring read cost, not measured; others stay views |
+| Several physical gold tables | No measured need; views suffice | Two persisted (`process_metrics_per_batch`, `process_metrics_per_hour`) for expected monitoring read cost, not measured; others stay views |
 | Source/plant-grain facts, `input_scopes` or `upstream_units` arrays | Membership cannot attribute batch metrics | Rejected |
 | Lean facts with all means in presentation views | Repeats work in every monitor | Superseded |
 | Product-named `KAFKA` type | Broker belongs in `message_system` | Superseded by `MESSAGE` |
@@ -369,7 +384,7 @@ Id mix-up check (overlapping windows/keys across streams); per-partition offset 
 **Facts, lineage and layout**
 
 - How will whole-batch formation be reconciled when readers split telemetry commits?
-- How far back must the `hourly_facts` and `batch_facts` builds rewrite to absorb late or replayed batches?
+- *(Answered 2026-10-29: a streaming build recomputes changed batches and hours; no lookback.)* How far back must the `process_metrics_per_hour` and `process_metrics_per_batch` builds rewrite to absorb late or replayed batches?
 - What will enforce envelope consistency, uniqueness and population checks before metrics are published?
 - How much history is needed to resolve known references? Is Bronze retention long enough?
 - What evidence identifies the exact downstream population when ancestry is insufficient?
