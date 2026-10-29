@@ -141,9 +141,13 @@ Contract details: `decisions/message-histogram-contract-v1.md`.
 
 Details: `decisions/batch-telemetry-model.md`.
 
-### 2026-10-29: table naming
+### 2026-10-29: table naming and aggregation jobs
 
 - **Decided:** `batch_telemetry` → `process_telemetry`, `batch_facts` → `process_metrics_per_batch`, `hourly_facts` → `process_metrics_per_hour`. Earlier log entries keep the names used at the time. Aggregation jobs that populate the two metrics tables from raw are in development.
+- **First implementation (local, not run in production):** a Structured Streaming job over `process_telemetry`, built on Core (histogram bounds). Each micro-batch is unioned with the raw rows of the same (`job_name`, `query_id`, `batch_id`, `batch_date`) from the table, deduplicated, aggregated and merged into the output on that table's keys. Hourly output re-reads the whole affected hour, not only the changed batches. Planned trigger: `availableNow` on a schedule.
+- **Why streaming:** checkpointed progress; a late, replayed or split raw commit arrives as new input and triggers its own recomputation, so no rewrite lookback has to be chosen. Recomputing from the table rather than from the micro-batch is what makes split commits (H12) converge and replays idempotent, provided the merge replaces matched rows rather than adding to them.
+- **Open risks (agent challenge, not verified):** `distinct` after the union also hides a genuine duplicate raw row, which the planned duplicate-key check should catch; using the micro-batch only for keys and the re-read for rows would avoid the union. The job must not report into `process_telemetry` through the Core wrapper, or it feeds itself. Deletes on raw (retention) break a streaming Delta source unless planned for. A checkpoint only moves forward: aggregation logic changes need a batch backfill over the same function. The current hour is partial by design. Merge source must be unique per target key.
+- **Tangent, later:** deletion vectors to speed up merges; Photon. Both are performance questions for H4, not design.
 
 ---
 
