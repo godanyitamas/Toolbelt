@@ -32,6 +32,7 @@ A file-only `processed_files` reporting table had to be extended to file, messag
 - **Identity:** session-wide listener vs SparkContext local property vs checkpoint `metadata` file.
 - **Write idempotency:** switch every module's data-write `txnAppId` to query id vs use query id only for telemetry.
 - **Trend layer (2026-10-25):** hourly trends derived from `process_metrics_per_batch` vs an hourly table built from raw; derived objects as views vs persisted tables.
+- **Derived-table build (2026-10-29):** scheduled rebuild with `replaceWhere` over a lookback vs a checkpointed stream over raw that recomputes the changed keys.
 
 ## Decision
 
@@ -42,6 +43,7 @@ A file-only `processed_files` reporting table had to be extended to file, messag
 - **Layout (2026-10-25):** raw clustered on (`job_name`, `batch_date`), `process_metrics_per_hour` on (`job_name`, `batch_end_hour`); no partitioning. `job_name` leads because the readers, people and reports, know jobs by name. A renamed job splits name-filtered history; trend continuity uses `job_id`.
 - **Naming (2026-10-29):** raw `process_telemetry`, per-batch `process_metrics_per_batch`, hourly `process_metrics_per_hour`, edges `process_batch_dependencies` (formerly `batch_telemetry`, `batch_facts`, `hourly_facts`, `batch_dependencies`). `process_` is a namespace prefix only; the grain is in the suffix. The hourly key column is `batch_end_hour` (formerly `hour_date`): the UTC hour of `batch_end_ts`, not event time.
 - **`process_metrics_per_batch` and `process_metrics_per_hour` are persisted Delta tables (2026-10-25)**; other derived objects (daily rollups, daily file percentiles from raw) start as views and are materialized only when measured cost or retained history requires it.
+- **Build (2026-10-29):** one Scala aggregation function, run by a scheduled `availableNow` stream over `process_telemetry`; each micro-batch supplies the changed batch keys and hours, outputs are recomputed from raw and merged on each table's keys. The aggregation job reports an empty dataset to the Core wrapper.
 - **Identity:** (`query_id`, `batch_id`) from the SparkContext local property `sql.streaming.queryId` read on the batch thread; `job_id` for continuity; run ids per attempt; job/task names as labels only.
 - **Stamp on write, record on read:** producers propagate their query/batch identity in output data; consumers record the upstream keys they read.
 - **Telemetry idempotency only:** telemetry appends use `txnAppId` = query id, `txnVersion` = batch id. Module data-write transaction ids are not changed in this migration.
@@ -64,7 +66,7 @@ A file-only `processed_files` reporting table had to be extended to file, messag
 - `sql.streaming.queryId` is an internal key (a runtime upgrade could remove it) and requires `sparkContext`, so dedicated job clusters; not available under Spark Connect.
 - Facts correctness depends on whole-batch formation, which is not established when Delta readers split one telemetry commit.
 - Backlog ("what's waiting") needs evidence beyond successful-input rows: inventories or broker end offsets.
-- Persisted derived tables are only as correct as their refresh: late or replayed batches and split commits must rewrite recent hours and batches (e.g. `replaceWhere` over a lookback) rather than append only. Both builds carry the integrity checks (duplicate raw rows, one source type per batch, histogram totals vs counts).
+- Persisted derived tables are only as correct as their build (2026-10-29): a scheduled `availableNow` stream over raw (`skipChangeCommits`) re-reads the changed batches and every affected hour from raw and merges, replacing matched rows, so late, replayed or split raw commits trigger their own recomputation without a lookback. The checkpoint only moves forward: logic changes need a batch backfill through the same function, and raw file retention (14 days) bounds how long the job may stay stopped. Both builds carry the integrity checks (duplicate raw rows, one source type per batch, histogram totals vs counts).
 - Daily file percentiles cannot be derived from hourly rows and are available only while raw is retained. `batch_date` is a UTC day; a local-day report spans two `batch_date` values.
 - Hourly processing-time percentiles assign each batch to the hour it ended.
 
@@ -77,4 +79,4 @@ A file-only `processed_files` reporting table had to be extended to file, messag
 - A move to serverless or standard access mode removes `sparkContext`.
 - The derived-table builds turn out costly, or monitoring reads do not get cheaper.
 - Daily or longer-window file percentiles are needed beyond raw retention (→ file histograms).
-- The rewrite lookback for late batches cannot be bounded.
+- The aggregation stream cannot keep up, or must stay stopped longer than raw file retention allows.

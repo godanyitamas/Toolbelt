@@ -245,11 +245,11 @@ Logical key: (`query_id`, `batch_id`, `source_id`) + key object (+ plant scope).
 
 ### Facts and dependencies
 
-- `process_metrics_per_batch`: one flat row per batch; validate one source type and consistent envelope before selecting it. Build means, bounds, coverage and completion ages alongside sums/counts; zero denominators stay null; missing evidence never becomes complete coverage.
+- `process_metrics_per_batch`: one flat row per batch; validate one source type and consistent envelope before selecting it. Build means, bounds, coverage and completion ages alongside sums/counts; zero denominators stay null; missing evidence never becomes complete coverage. Maintained by the streaming aggregation job: changed batches are re-read from raw and merged, replacing matched rows.
 - Weighted trends use `SUM(sum) / NULLIF(SUM(count), 0)`, never `AVG(batch_mean)`. A positive count with a missing sum is an integrity failure.
 - Histograms in facts: merge partition arrays per batch (exact); derive exact shares at bounds and interpolated percentiles (flag open tails); keep merged arrays so daily rollups merge facts again. Completion-window percentiles use completion arrays.
 - One age population per batch assumes all its sources share one timestamp meaning (observed, not checked).
-- `process_metrics_per_hour`: one row per (`job_id`, `source_id`, processing hour), built from raw, persisted, clustered on (`job_name`, `batch_end_hour`); refresh rewrites recent hours. Details in `decisions/batch-telemetry-model.md`.
+- `process_metrics_per_hour`: one row per (`job_id`, `source_id`, processing hour), built from raw, persisted, clustered on (`job_name`, `batch_end_hour`); maintained by the same streaming job, which re-reads every affected hour from raw and merges, replacing matched rows (no lookback). Details in `decisions/batch-telemetry-model.md`.
 - `process_batch_dependencies`: (`upstream_query_id`, `upstream_batch_id`, downstream query/batch, consumed Delta table, `consumed_row_count`), summed over plant subdivisions. Keep known references even without producer facts; left-join facts on both sides; do not clamp negative hand-off times.
 - **Formation is not established:** a reader's file admission limits can split one telemetry commit, producing partial facts. Run the commit-split experiment before choosing reconciliation.
 - Optional platform enrichment ([jobs system tables](https://docs.databricks.com/aws/en/admin/system-tables/jobs), [billable usage](https://docs.databricks.com/aws/en/admin/system-tables/billing)): filter to the workspace, collapse run slices and SCD2 versions before joining, keep one row per batch. Run usage is not per-batch cost without an allocation rule.
@@ -384,7 +384,7 @@ Id mix-up check (overlapping windows/keys across streams); per-partition offset 
 **Facts, lineage and layout**
 
 - How will whole-batch formation be reconciled when readers split telemetry commits?
-- How far back must the `process_metrics_per_hour` and `process_metrics_per_batch` builds rewrite to absorb late or replayed batches?
+- *(Answered 2026-10-29: a streaming build recomputes changed batches and hours; no lookback.)* How far back must the `process_metrics_per_hour` and `process_metrics_per_batch` builds rewrite to absorb late or replayed batches?
 - What will enforce envelope consistency, uniqueness and population checks before metrics are published?
 - How much history is needed to resolve known references? Is Bronze retention long enough?
 - What evidence identifies the exact downstream population when ancestry is insufficient?
