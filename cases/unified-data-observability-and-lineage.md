@@ -143,7 +143,7 @@ Details: `decisions/batch-telemetry-model.md`.
 
 ### 2026-10-29: table naming and aggregation jobs
 
-- **Decided:** `batch_telemetry` → `process_telemetry`, `batch_facts` → `process_metrics_per_batch`, `hourly_facts` → `process_metrics_per_hour`, `batch_dependencies` → `process_batch_dependencies`, hourly `hour_date` → `batch_end_hour` (UTC hour of `batch_end_ts`). `process_` is a namespace prefix, not a grain. Earlier log entries keep the names used at the time. Aggregation jobs that populate the two metrics tables from raw are in development.
+- **Decided:** `batch_telemetry` → `process_telemetry`, `batch_facts` → `process_metrics_per_batch`, `hourly_facts` → `process_metrics_per_hour`, `batch_dependencies` → `process_batch_dependencies`. `process_` is a namespace prefix, not a grain. Earlier log entries keep the names used at the time. Aggregation jobs that populate the two metrics tables from raw are in development.
 - **First implementation (local, not run in production):** a Structured Streaming job over `process_telemetry`, built on Core (histogram bounds). Each micro-batch is unioned with the raw rows of the same (`job_name`, `query_id`, `batch_id`, `batch_date`) from the table, deduplicated, aggregated and merged into the output on that table's keys. Hourly output re-reads the whole affected hour, not only the changed batches. Planned trigger: `availableNow` on a schedule.
 - **Why streaming:** checkpointed progress; a late, replayed or split raw commit arrives as new input and triggers its own recomputation, so no rewrite lookback has to be chosen. Recomputing from the table rather than from the micro-batch is what makes split commits (H12) converge and replays idempotent, provided the merge replaces matched rows rather than adding to them.
 - **Open risks (agent challenge, not verified):** `distinct` after the union also hides a genuine duplicate raw row, which the planned duplicate-key check should catch; using the micro-batch only for keys and the re-read for rows would avoid the union. The job must not report into `process_telemetry` through the Core wrapper, or it feeds itself. Deletes on raw (retention) break a streaming Delta source unless planned for. A checkpoint only moves forward: aggregation logic changes need a batch backfill over the same function. The current hour is partial by design. Merge source must be unique per target key.
@@ -155,6 +155,11 @@ Details: `decisions/batch-telemetry-model.md`.
 - **Decided:** a stalled aggregation job is detected by platform job-failure alerts; no raw-vs-output freshness check. Accepted gap: a run that succeeds without progressing goes unnoticed.
 - **Implementation:** the aggregation logic is one Scala function, reused by the stream and by any batch backfill. Under consideration: use the micro-batch only for keys and take rows from the re-read, instead of union + `distinct`.
 - **Tangent, later:** deletion vectors to speed up merges; Photon. Both are performance questions for H4, not design.
+
+### 2026-10-30: hourly column naming
+
+- **Decided:** in `process_metrics_per_hour`, the hour key is `process_hour` (formerly `hour_start_ts`): the UTC hour that contains `batch_end_ts`. The grain is the hour; which instant assigns a batch to it is a rule, stated in the column comment rather than the name. The date column is `batch_date` (formerly `hour_date`), the same value and name as in raw.
+- **Observed (local test):** the hour is truncated on epoch microseconds, so it is a UTC hour regardless of session time zone. Open: whether `batch_date` in the hourly build is also derived in UTC; `to_date` on a timestamp uses the session time zone.
 
 ---
 
@@ -249,7 +254,7 @@ Logical key: (`query_id`, `batch_id`, `source_id`) + key object (+ plant scope).
 - Weighted trends use `SUM(sum) / NULLIF(SUM(count), 0)`, never `AVG(batch_mean)`. A positive count with a missing sum is an integrity failure.
 - Histograms in facts: merge partition arrays per batch (exact); derive exact shares at bounds and interpolated percentiles (flag open tails); keep merged arrays so daily rollups merge facts again. Completion-window percentiles use completion arrays.
 - One age population per batch assumes all its sources share one timestamp meaning (observed, not checked).
-- `process_metrics_per_hour`: one row per (`job_id`, `source_id`, processing hour), built from raw, persisted, clustered on (`job_name`, `batch_end_hour`); maintained by the same streaming job, which re-reads every affected hour from raw and merges, replacing matched rows (no lookback). Details in `decisions/batch-telemetry-model.md`.
+- `process_metrics_per_hour`: one row per (`job_id`, `source_id`, `process_hour`), built from raw, persisted; `process_hour` = UTC hour containing `batch_end_ts`; clustered on (`job_name`, `batch_date`); maintained by the same streaming job, which re-reads every affected hour from raw and merges, replacing matched rows (no lookback). Details in `decisions/batch-telemetry-model.md`.
 - `process_batch_dependencies`: (`upstream_query_id`, `upstream_batch_id`, downstream query/batch, consumed Delta table, `consumed_row_count`), summed over plant subdivisions. Keep known references even without producer facts; left-join facts on both sides; do not clamp negative hand-off times.
 - **Formation is not established:** a reader's file admission limits can split one telemetry commit, producing partial facts. Run the commit-split experiment before choosing reconciliation.
 - Optional platform enrichment ([jobs system tables](https://docs.databricks.com/aws/en/admin/system-tables/jobs), [billable usage](https://docs.databricks.com/aws/en/admin/system-tables/billing)): filter to the workspace, collapse run slices and SCD2 versions before joining, keep one row per batch. Run usage is not per-batch cost without an allocation rule.
