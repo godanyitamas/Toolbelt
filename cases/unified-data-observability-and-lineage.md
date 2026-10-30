@@ -158,7 +158,7 @@ Details: `decisions/batch-telemetry-model.md`.
 
 ### 2026-10-30: hourly column naming
 
-- **Decided:** in `process_metrics_per_hour`, the hour key is `process_hour` (formerly `hour_start_ts`): the UTC hour that contains `batch_end_ts`. The grain is the hour; which instant assigns a batch to it is a rule, stated in the column comment rather than the name. The date column is `batch_date` (formerly `hour_date`), the same value and name as in raw.
+- **Decided:** in `process_metrics_per_hour`, the hour key is `process_hour` (formerly `hour_start_ts`): the UTC hour that contains `batch_end_ts`. The grain is the hour; which instant assigns a batch to it is a rule, stated in the column comment rather than the name. The date column is `batch_date` (formerly `hour_date`), the same value and name as in raw. Clustering is on (`job_name`, `process_hour`), the columns readers filter and the merge matches on.
 - **Observed (local test):** the hour is truncated on epoch microseconds, so it is a UTC hour regardless of session time zone. Open: whether `batch_date` in the hourly build is also derived in UTC; `to_date` on a timestamp uses the session time zone.
 
 ---
@@ -254,7 +254,7 @@ Logical key: (`query_id`, `batch_id`, `source_id`) + key object (+ plant scope).
 - Weighted trends use `SUM(sum) / NULLIF(SUM(count), 0)`, never `AVG(batch_mean)`. A positive count with a missing sum is an integrity failure.
 - Histograms in facts: merge partition arrays per batch (exact); derive exact shares at bounds and interpolated percentiles (flag open tails); keep merged arrays so daily rollups merge facts again. Completion-window percentiles use completion arrays.
 - One age population per batch assumes all its sources share one timestamp meaning (observed, not checked).
-- `process_metrics_per_hour`: one row per (`job_id`, `source_id`, `process_hour`), built from raw, persisted; `process_hour` = UTC hour containing `batch_end_ts`; clustered on (`job_name`, `batch_date`); maintained by the same streaming job, which re-reads every affected hour from raw and merges, replacing matched rows (no lookback). Details in `decisions/batch-telemetry-model.md`.
+- `process_metrics_per_hour`: one row per (`job_id`, `source_id`, `process_hour`), built from raw, persisted; `process_hour` = UTC hour containing `batch_end_ts`; clustered on (`job_name`, `process_hour`); maintained by the same streaming job, which re-reads every affected hour from raw and merges, replacing matched rows (no lookback). Details in `decisions/batch-telemetry-model.md`.
 - `process_batch_dependencies`: (`upstream_query_id`, `upstream_batch_id`, downstream query/batch, consumed Delta table, `consumed_row_count`), summed over plant subdivisions. Keep known references even without producer facts; left-join facts on both sides; do not clamp negative hand-off times.
 - **Formation is not established:** a reader's file admission limits can split one telemetry commit, producing partial facts. Run the commit-split experiment before choosing reconciliation.
 - Optional platform enrichment ([jobs system tables](https://docs.databricks.com/aws/en/admin/system-tables/jobs), [billable usage](https://docs.databricks.com/aws/en/admin/system-tables/billing)): filter to the workspace, collapse run slices and SCD2 versions before joining, keep one row per batch. Run usage is not per-batch cost without an allocation rule.
