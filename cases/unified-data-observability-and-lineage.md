@@ -161,6 +161,10 @@ Details: `decisions/batch-telemetry-model.md`.
 - **Decided:** in `process_metrics_per_hour`, the hour key is `process_hour` (formerly `hour_start_ts`): the UTC hour that contains `batch_end_ts`. The grain is the hour; which instant assigns a batch to it is a rule, stated in the column comment rather than the name. The date column is `batch_date` (formerly `hour_date`), the same value and name as in raw. Clustering is on (`job_name`, `process_hour`), the columns readers filter and the merge matches on.
 - **Observed (local test):** the hour is truncated on epoch microseconds, so it is a UTC hour regardless of session time zone. Open: whether `batch_date` in the hourly build is also derived in UTC; `to_date` on a timestamp uses the session time zone.
 
+### 2026-10-31: volume detectors (synthetic lab)
+
+- **Lab (synthetic, agent-built, not evidence about the real tables):** `labs/hourly-volume-detectors/` compares robust z against the same hour on 7 previous weeks, EWMA and CUSUM on simulated hourly volume. Hypotheses to test on `process_metrics_per_hour`: per-hour 7-point MADs make the scale too noisy (a false alarm every 15–21 h on clean simulated data) while a pooled relative scale does not; robust z misses a sustained −8 % shift that EWMA and CUSUM catch within 6–8 h.
+
 ---
 
 ## Evidence

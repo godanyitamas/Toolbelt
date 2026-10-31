@@ -29,6 +29,7 @@ Interaction pattern: **my model → AI challenge → investigation → AI review
 ├── cases/           # core: real problems and investigations
 ├── concepts/        # reusable mental models that emerged from several cases
 ├── decisions/       # architectural decisions: why A instead of B
+├── labs/            # executable experiments and reproducible investigations
 ├── templates/       # case.md, retrospective-case.md
 └── .ai/workflows/   # stable, repository-specific agent workflows
 ```
