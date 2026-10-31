@@ -1,7 +1,7 @@
 // Hourly volume monitor: robust z against the same hour on previous weeks, then EWMA and
 // two-sided CUSUM over that z. Synthetic data, seeded; nothing here comes from a real system.
 export const CFG = {
-  weeks: 7,            // reference: the same hour of week on the previous 7 weeks
+  weeks: 7,            // reference: the same hour of week on this many previous weeks (7, or fewer at a cold start)
   zFlag: 3.5,          // |robust z| beyond this is flagged (Iglewicz–Hoaglin modified z rule)
   lambda: 0.2,         // EWMA weight of the newest hour
   L: 3,                // EWMA limit in asymptotic EWMA standard deviations
@@ -32,22 +32,23 @@ export const median = (a) => { const s = [...a].sort((x, y) => x - y); const m =
 
 // events in the shown period, by hour index from Monday 00:00
 export const EVENTS = {
-  outage: 30,          // Tue 06:00: a consumer outage, a quarter of the volume lands
-  catchup: 31,         // Tue 07:00: the backlog is processed in this hour
+  outage: 54,          // Wed 06:00: a consumer outage, a quarter of the volume lands
+  catchup: 55,         // Wed 07:00: the backlog is processed in this hour
   dropFrom: 74,        // Thu 02:00 on: one producer of several goes quiet, -8 % volume
   dropTo: 104,
 };
 const HISTORY_SPIKE = { week: 3, from: 0, to: 120, factor: 1.6 };   // a replay week in the history
+export const HISTORY_WEEKS = 7;                                       // weeks generated before the shown period
 
-// Pooled scale: the deviations of every hour of the last 7 weeks from its own same-hour median,
+// Pooled scale: the deviations of every hour of the reference weeks from its own same-hour median,
 // as a share of that median, pooled over all 168 hours of the week. One stable relative noise
-// figure instead of 168 seven-point MADs. POOL_FIX corrects the in-sample bias (one of seven
-// deviations from a median of seven is always zero); found by simulation, see poolFix().
-export const POOL_FIX = 1.217;
+// figure instead of 168 small-sample MADs. poolFix(n) corrects the in-sample bias (with 7 weeks,
+// one of seven deviations from a median of seven is always zero); found by simulation.
 
 export function build(c = CFG, seed = 11) {
   const n = rng(seed);
-  const start = c.weeks * 168;
+  const start = HISTORY_WEEKS * 168;
+  const fix = poolFix(c.weeks);
   const total = start + c.days * 24;
   const x = [];
   for (let t = 0; t < total; t++) {
@@ -69,7 +70,7 @@ export function build(c = CFG, seed = 11) {
       const med = median(refs);
       for (const r of refs) devs.push(Math.abs(r - med) / med);
     }
-    return 1.4826 * median(devs) * POOL_FIX;
+    return 1.4826 * median(devs) * fix;
   };
   const rel = pooledAt(start);
   const states = { local: { e: 0, u: 0, d: 0 }, pooled: { e: 0, u: 0, d: 0 } };
@@ -97,15 +98,17 @@ export function build(c = CFG, seed = 11) {
 
 export const flags = (r, c = CFG) => ({ z: Math.abs(r.z) > c.zFlag, ewma: Math.abs(r.ewma) > ewmaLimit(c), cusum: r.signal });
 
-export function poolFix(trials = 4000, seed = 3) {
+const FIXES = {};
+export function poolFix(weeks = 7, trials = 20000, seed = 3) {
+  if (FIXES[weeks]) return FIXES[weeks];
   const n = rng(seed);
   const devs = [];
-  for (let i = 0; i < trials; i++) { const refs = Array.from({ length: 7 }, () => n()); const m = median(refs); for (const r of refs) devs.push(Math.abs(r - m)); }
-  return 1 / (1.4826 * median(devs));
+  for (let i = 0; i < trials; i++) { const refs = Array.from({ length: weeks }, () => n()); const m = median(refs); for (const r of refs) devs.push(Math.abs(r - m)); }
+  return (FIXES[weeks] = 1 / (1.4826 * median(devs)));
 }
 
 // Average run length (hours to the first alarm) under idealised in-control data: iid normal
-// volumes, same-hour median of 7 reference weeks, either scale. shift is in true noise units.
+// volumes, same-hour median of c.weeks reference weeks, either scale. shift is in true noise units.
 export function arl(mode = "pooled", c = CFG, runs = 2000, seed = 5, shift = 0) {
   const n = rng(seed);
   const out = { z: 0, ewma: 0, cusum: 0 };
@@ -133,7 +136,7 @@ export function arl(mode = "pooled", c = CFG, runs = 2000, seed = 5, shift = 0) 
   return out;
 }
 
-// False-flag rate of the robust z itself when the baseline is only 7 noisy points.
+// False-flag rate of the robust z itself when the baseline is only c.weeks noisy points.
 export function robustFalseRate(c = CFG, trials = 200000, seed = 9) {
   const n = rng(seed);
   let hit = 0;
